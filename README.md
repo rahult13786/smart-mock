@@ -7,7 +7,7 @@ Two parts:
 | `server/` | Node + Express API on **NeDB**. Register an API, then `GET` / `POST` / `PATCH` JSON records on its base path. |
 | `frontend/` | React (Vite) portal: register APIs, paste a sample JSON, pick searchable tags, browse records and edit them on a generated details page. |
 | `Dockerfile`, `openshift/` | Container image and OpenShift resources (see *Deploy*) |
-| `render.yaml` | Render Blueprint |
+| `deploy/render.yaml` | Render Blueprint (outside the repo root on purpose – see *Deploy → Vercel*) |
 | `vercel.json`, `api/index.js` | Vercel configuration and serverless entry point |
 
 ## Run
@@ -64,12 +64,14 @@ re-created on every start.
 
 ### A. Render (free web service)
 
-The repository contains a Blueprint, `render.yaml`, with all settings.
+The repository contains a Blueprint, `deploy/render.yaml`, with all settings. It is not in the repository root on
+purpose: Vercel reads a root `render.yaml` when importing and would use it instead of `vercel.json`.
 
 **Option 1 – Blueprint (fewest clicks)**
 1. Sign in at https://dashboard.render.com (sign up with GitHub).
 2. **New → Blueprint** → connect your GitHub account → pick the `mock-api-portal` repository.
-3. Render reads `render.yaml` and shows one web service `mock-api-portal` (plan *Free*). Click **Apply**.
+   In **Blueprint file path** enter `deploy/render.yaml` (Render looks for a root `render.yaml` by default).
+3. Render reads `deploy/render.yaml` and shows one web service `mock-api-portal` (plan *Free*). Click **Apply**.
 4. Wait for the build (installs both packages, builds the portal) and the first deploy – watch the **Logs** tab
    until you see `Mock API server listening`.
 5. Open `https://mock-api-portal-<random>.onrender.com` (shown at the top of the service page).
@@ -97,7 +99,7 @@ The repository contains a Blueprint, `render.yaml`, with all settings.
 * Free plan facts: sleeps after 15 min without traffic; 750 free instance hours per month; the filesystem is
   temporary, so registered APIs and records disappear on restart / redeploy / sleep.
 * **Keep data**: change the plan to a paid instance (e.g. *Starter*), add a **Disk** (Service → Disks → mount
-  path `/var/data`, 1 GB) and set `DATA_DIR=/var/data` (the commented block in `render.yaml` does the same).
+  path `/var/data`, 1 GB) and set `DATA_DIR=/var/data` (the commented block in `deploy/render.yaml` does the same).
 
 ### B. Vercel (free Hobby plan)
 
@@ -107,6 +109,9 @@ and every other path to the portal.
 
 1. Sign in at https://vercel.com with GitHub → **Add New… → Project** → **Import** the repository.
 2. On the configure screen:
+   * Check that the settings are not shown as *"Inferred from `render.yaml` configuration"*. If they are, the
+     repository still has a `render.yaml` in its root – it must live in `deploy/` (pull the latest code, or move
+     it, commit, push and import again).
    * **Framework Preset**: *Other* (the `vercel.json` in the repo also sets this).
    * **Root Directory**: `./`.
    * **Build and Output Settings**: leave them – `vercel.json` sets install `npm run install:all`, build
@@ -116,6 +121,13 @@ and every other path to the portal.
 4. Project → **Settings → Build and Deployment → Node.js Version**: choose **22.x** (then redeploy).
 
 CLI alternative: `npm i -g vercel` → `vercel` (preview) → `vercel --prod` (production), run in the project folder.
+
+**If the build or the site still behaves differently from `vercel.json`**
+* Project → **Settings → Build and Deployment**: Framework Preset *Other*; Install Command, Build Command and
+  Output Directory either empty (then `vercel.json` decides) or exactly `npm run install:all`, `npm run build`,
+  `frontend/dist`; Root Directory empty (`./`). Redeploy (Deployments → ⋯ → Redeploy, without build cache).
+* The deployment's **Build Logs** should show `npm run install:all` and `vite build`; **Functions** should
+  list `api/index.js`. Check `https://<project>.vercel.app/health` → `{"ok":true}`.
 
 **Limits to know**
 * Data is written to `/tmp` inside a function instance. It survives only while that instance is alive and is not
@@ -411,4 +423,3 @@ When 2 or 3 happens the response carries `X-Search-Config-Updated: <paths>`, and
 ## Security
 
 `npm audit` reports 0 vulnerabilities for both `server/` and `frontend/` (Vite 8, React Router 7.18).
-# smart-mock

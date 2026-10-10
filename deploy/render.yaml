@@ -1,5 +1,6 @@
 # Render Blueprint – one web service runs the API and serves the portal.
-# Dashboard → New → Blueprint → pick this repository.
+# Dashboard → New → Blueprint → pick this repository → Blueprint file path: deploy/render.yaml
+# (kept out of the repository root so Vercel does not pick it up when importing the project)
 services:
   - type: web
     name: mock-api-portal
