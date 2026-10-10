@@ -1,0 +1,630 @@
+import { useEffect, useRef, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { admin } from '../api.js';
+import { useApis } from '../App.jsx';
+import { nextVersion } from '../util/value.js';
+import EnumModal from '../components/EnumModal.jsx';
+import MockModal from '../components/MockModal.jsx';
+
+const isIdPath = (p) => /^id$/i.test(String(p).split('.').pop()); // id tags are always unique (locked)
+
+/** Enum cell: shows the allowed values (if any) and opens the editor. */
+function EnumCell({ tag, onEdit }) {
+  const vals = tag.enum || [];
+  return (
+    <button
+      className={`btn small enum-btn ${vals.length ? 'set' : ''}`}
+      title={vals.length ? vals.map(String).join(', ') : 'Define allowed values'}
+      onClick={onEdit}
+    >
+      {vals.length ? `${vals.length} value${vals.length === 1 ? '' : 's'}` : '+ Enum'}
+    </button>
+  );
+}
+
+const TAG_TYPES = ['string', 'number', 'boolean'];
+
+export default function RegisterPage() {
+  const { apis, refresh } = useApis();
+  const [params, setParams] = useSearchParams();
+  const selected = params.get('api');
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState('');
+  const [version, setVersion] = useState('v1');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [versionOf, setVersionOf] = useState(null); // api we are creating a new version of
+  const [prefill, setPrefill] = useState(null); // {key, from, note}
+
+  const select = (key) => setParams(key ? { api: key } : {});
+
+  // the API itself can change the configuration (e.g. a GET filter makes a field searchable),
+  // so re-read it when the page opens and whenever the browser tab gets focus again
+  useEffect(() => {
+    refresh();
+    const onFocus = () => document.visibilityState === 'visible' && refresh();
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
+  }, [refresh]);
+
+  function startNewVersion(api, note) {
+    setVersionOf(api);
+    setName(api.name);
+    setVersion(nextVersion(api.version, apis.filter((a) => a.name === api.name).map((a) => a.version)));
+    setError('');
+    setAdding(true);
+    setPrefill({ from: api._id, note });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function closeForm() {
+    setAdding(false);
+    setVersionOf(null);
+    setName('');
+    setVersion('v1');
+    setError('');
+  }
+
+  async function create(e) {
+    e.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      const api = await admin.create(name, version);
+      await refresh();
+      if (versionOf && prefill) setPrefill({ ...prefill, key: api._id });
+      else setPrefill(null);
+      closeForm();
+      select(api._id);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div>
+          <h1>Register API</h1>
+          <p className="muted">
+            Each API gets its own base path <code>/api/{'{name}'}/{'{version}'}</code> and its own NeDB data file.
+          </p>
+        </div>
+        <button className="btn primary round" title="Add API" onClick={() => (adding ? closeForm() : setAdding(true))}>
+          {adding ? '×' : '+'}
+        </button>
+      </div>
+
+      {adding && (
+        <form className="card create-form" onSubmit={create}>
+          {versionOf && (
+            <div className="alert warn wide">
+              New version of <b>{versionOf.name}</b> ({versionOf.version}). Its sample will be copied into the new
+              version so you can extend it.
+            </div>
+          )}
+          <label>
+            Name
+            <input
+              autoFocus={!versionOf}
+              required
+              value={name}
+              readOnly={!!versionOf}
+              className={versionOf ? 'readonly' : ''}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. agreement"
+            />
+          </label>
+          <label>
+            Version
+            <input required autoFocus={!!versionOf} value={version} onChange={(e) => setVersion(e.target.value)} placeholder="v1" />
+          </label>
+          <button className="btn primary" disabled={busy}>
+            {busy ? 'Creating…' : 'Create'}
+          </button>
+          {error && <div className="alert error wide">{error}</div>}
+        </form>
+      )}
+
+      <div className="api-list">
+        {apis.length === 0 && !adding && (
+          <div className="empty card">No APIs yet. Click <b>+</b> to register your first API.</div>
+        )}
+        {apis.map((a) => (
+          <ApiPanel
+            key={a._id}
+            api={a}
+            open={selected === a._id}
+            onToggle={() => select(selected === a._id ? null : a._id)}
+            onChanged={refresh}
+            onNewVersion={(note) => startNewVersion(a, note)}
+            prefill={prefill && prefill.key === a._id ? prefill : null}
+            onPrefillUsed={() => setPrefill(null)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPrefillUsed }) {
+  const [sampleText, setSampleText] = useState('');
+  const [editingSample, setEditingSample] = useState(!api.hasSample);
+  const [tags, setTags] = useState(api.tags);
+  const [removed, setRemoved] = useState([]);
+  const [msg, setMsg] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [newTag, setNewTag] = useState(null); // {path, type, searchable} while the [+] row is open
+  const [tagError, setTagError] = useState(null); // {reason, suggestions, hint, path}
+  const [paths, setPaths] = useState([]);
+  const [tagsOpen, setTagsOpen] = useState(false);
+  const [mocking, setMocking] = useState(false); // Tags section starts collapsed, like Endpoints
+  const [enumEdit, setEnumEdit] = useState(null); // 'new' or index of the tag whose enum is edited
+  const sampleRef = useRef(null);
+
+  // take the server's tags unless the user has unsaved changes in the table
+  const syncedTags = useRef(api.tags);
+  const tagsRef = useRef(tags);
+  tagsRef.current = tags;
+  useEffect(() => {
+    const clean = JSON.stringify(tagsRef.current) === JSON.stringify(syncedTags.current);
+    syncedTags.current = api.tags;
+    if (clean) {
+      setTags(api.tags);
+      setRemoved([]);
+    }
+  }, [api.tags]);
+  useEffect(() => setEditingSample(!api.hasSample), [api.hasSample]);
+
+  // New version: copy the previous version's sample into the editor
+  useEffect(() => {
+    if (!open || !prefill) return;
+    admin
+      .sample(prefill.from)
+      .then((s) => {
+        setEditingSample(true);
+        setSampleText(JSON.stringify(s, null, 2));
+        setMsg({ type: 'warn', text: `Sample copied from the previous version. ${prefill.note || 'Update it and save.'}` });
+      })
+      .catch(() => {})
+      .finally(onPrefillUsed);
+  }, [open, prefill, onPrefillUsed]);
+
+  // value paths of the sample, for the path suggestions of the [+] row
+  useEffect(() => {
+    if (open && api.hasSample) admin.paths(api._id).then(setPaths).catch(() => setPaths([]));
+  }, [open, api._id, api.hasSample, api.updatedAt]);
+
+  const tagsDirty = removed.length > 0 || JSON.stringify(tags) !== JSON.stringify(api.tags);
+
+  function showTagError(err, path) {
+    setTagsOpen(true);
+    const d = err.data || err;
+    const first = (d.invalid || d.results || []).find((r) => !r.ok) || {};
+    setTagError({
+      path: first.path || path,
+      code: first.code || d.code,
+      reason: first.reason || d.error || err.message,
+      suggestions: first.suggestions || [],
+      hint: d.hint,
+    });
+  }
+
+  async function addTag() {
+    const path = newTag.path.trim();
+    setTagError(null);
+    if (!path) return;
+    if (tags.some((t) => t.path === path)) {
+      setTagError({ path, reason: `"${path}" is already in the list`, suggestions: [] });
+      return;
+    }
+    try {
+      const r = await admin.validateTags(api._id, [{ path, type: newTag.type }]);
+      if (!r.valid) return showTagError(r, path);
+      const norm = r.results[0].path;
+      setTags([...tags, { path: norm, level: norm.split('.').length, type: newTag.type, searchable: newTag.searchable, custom: true, isNew: true, ...(newTag.unique || isIdPath(norm) ? { unique: true } : {}), ...(newTag.enum?.length ? { enum: newTag.enum } : {}) }]);
+      setRemoved(removed.filter((p) => p !== norm));
+      setNewTag(null);
+    } catch (e) {
+      showTagError(e, path);
+    }
+  }
+
+  function removeTag(t) {
+    setTags(tags.filter((x) => x.path !== t.path));
+    if (!t.isNew) setRemoved([...removed, t.path]);
+  }
+
+  async function saveTags() {
+    setTagError(null);
+    const payload = [
+      ...tags.map(({ path, type, searchable, unique, custom, enum: values }) => ({ path, type, searchable, unique: !!unique, custom, enum: values || [] })),
+      ...removed.map((path) => ({ path, remove: true })),
+    ];
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await admin.saveTags(api._id, payload);
+      syncedTags.current = tags; // so the refreshed server tags replace the table
+      const warn = [
+        ...(r.enumWarnings || []).map(
+          (w) => `${w.count} stored value${w.count === 1 ? '' : 's'} of "${w.path}" ${w.count === 1 ? 'is' : 'are'} not in its allowed values (e.g. ${w.values.join(', ')})`
+        ),
+        ...(r.uniqueWarnings || []).map(
+          (w) => `"${w.path}" is unique but the data has duplicates (${w.duplicates.join(', ')}) – addressing those items by key returns an "ambiguous" error`
+        ),
+      ].join('; ');
+      setMsg(
+        warn
+          ? { type: 'warn', text: `Saved. Note: ${warn}.` }
+          : { type: 'ok', text: 'Tag configuration validated against the sample, saved, and records re-indexed.' }
+      );
+      await onChanged();
+    } catch (e) {
+      if (e.status === 422) showTagError(e);
+      else setMsg({ type: 'error', text: e.message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function openSampleEditor() {
+    setEditingSample(true);
+    loadCurrentSample();
+    setTimeout(() => sampleRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
+  }
+
+  async function run(fn, ok) {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const text = await fn();
+      setMsg({ type: 'ok', text: typeof text === 'string' ? text : ok });
+      await onChanged();
+    } catch (e) {
+      setMsg({ type: 'error', text: e.message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function saveSample() {
+    let parsed;
+    try {
+      parsed = JSON.parse(sampleText);
+    } catch (e) {
+      setMsg({ type: 'error', text: `Invalid JSON: ${e.message}` });
+      return;
+    }
+    run(async () => {
+      const r = await admin.saveSample(api._id, parsed);
+      setEditingSample(false);
+      setSampleText('');
+      setTagsOpen(true);
+      return `Sample saved – ${r.seeded} record(s) seeded, ${r.tags.length} tags found. Choose which tags are searchable below.`;
+    }, 'Sample saved');
+  }
+
+  async function loadFile(e) {
+    const f = e.target.files?.[0];
+    if (f) setSampleText(await f.text());
+  }
+
+  async function loadCurrentSample() {
+    try {
+      const s = await admin.sample(api._id);
+      setSampleText(JSON.stringify(s, null, 2));
+    } catch (e) {
+      setMsg({ type: 'error', text: e.message });
+    }
+  }
+
+  const base = `${window.location.origin}${api.basePath}`;
+
+  return (
+    <div className={`card api-panel ${open ? 'open' : ''}`}>
+      <button className="api-row" onClick={onToggle}>
+        <span className="caret">{open ? '▾' : '▸'}</span>
+        <span className="api-name">{api.name}</span>
+        <span className="badge">{api.version}</span>
+        <code className="muted">{api.basePath}</code>
+        <span className="spacer" />
+        <span className="muted small">{api.recordCount ?? 0} records</span>
+        {!api.hasSample && <span className="pill warn">needs sample</span>}
+      </button>
+
+      {open && (
+        <div className="api-body">
+          <div className="grid2">
+            <label>
+              Name
+              <input value={api.name} readOnly className="readonly" />
+            </label>
+            <label>
+              Version
+              <input value={api.version} readOnly className="readonly" />
+            </label>
+          </div>
+
+          <details className="endpoints">
+            <summary>Endpoints</summary>
+            <table className="kv">
+              <tbody>
+                <tr><td>GET</td><td><code>{base}</code> <span className="muted">?view=summary&amp;limit=&amp;skip=&amp;q=</span></td></tr>
+                <tr><td>GET</td><td><code>{base}/:id</code></td></tr>
+                <tr><td>GET</td><td><code>{base}?id=a,b,c</code> <span className="muted">records with those ids, as an array</span></td></tr>
+                <tr><td>GET</td><td><code>{base}?status=x,y&amp;agreementType=z</code> <span className="muted">any field of the sample; not-yet-searchable fields are enabled automatically</span></td></tr>
+                <tr><td>POST</td><td><code>{base}</code> <span className="muted">object or array of objects</span></td></tr>
+                <tr><td>PATCH</td><td><code>{base}/:id</code> <span className="muted">Content-Type application/json-patch+json (RFC 6902) or application/merge-patch+json (RFC 7396)</span></td></tr>
+              </tbody>
+            </table>
+          </details>
+
+          <section>
+            <div className="section-head">
+              <h3>Sample JSON</h3>
+              {api.hasSample && (
+                <button className="btn primary mock-btn" title="Generate up to 10 mock records from a template" onClick={() => setMocking(true)}>
+                  ✦ Create mocks
+                </button>
+              )}
+              {api.hasSample && !editingSample && (
+                <button className="btn" onClick={openSampleEditor}>
+                  Replace sample
+                </button>
+              )}
+            </div>
+            {editingSample ? (
+              <>
+                <textarea
+                  ref={sampleRef}
+                  className="code"
+                  rows={14}
+                  placeholder='Paste a sample record (object) or an array of records, e.g. [{"id":"1","name":"First"}]'
+                  value={sampleText}
+                  onChange={(e) => setSampleText(e.target.value)}
+                  spellCheck={false}
+                />
+                <div className="row gap">
+                  <button className="btn primary" disabled={busy || !sampleText.trim()} onClick={saveSample}>
+                    {busy ? 'Saving…' : 'Save sample'}
+                  </button>
+                  <label className="btn file">
+                    Load .json file
+                    <input type="file" accept=".json,application/json,.txt" onChange={loadFile} hidden />
+                  </label>
+                  {api.hasSample && (
+                    <button className="btn ghost" onClick={() => setEditingSample(false)}>Cancel</button>
+                  )}
+                  <span className="muted small">Records in the sample are stored as data (upserted by id).</span>
+                </div>
+              </>
+            ) : (
+              <p className="muted">
+                Sample saved. <Link to={`/browse/${api._id}`}>Open records →</Link>
+              </p>
+            )}
+          </section>
+
+          {msg && <div className={`alert ${msg.type}`}>{msg.text}</div>}
+
+          {api.hasSample && (
+            <section>
+              <div className="section-head">
+                <button className="tags-toggle" onClick={() => setTagsOpen((o) => !o)} aria-expanded={tagsOpen}>
+                  <span className="caret">{tagsOpen ? '▾' : '▸'}</span>
+                  <h3>Tags</h3>
+                  <span className="count">{tags.length}</span>
+                  {tags.some((t) => t.unique) && <span className="count on">{tags.filter((t) => t.unique).length} unique</span>}
+                  {tags.some((t) => t.enum?.length) && <span className="count on">{tags.filter((t) => t.enum?.length).length} enum</span>}
+                </button>
+                {tagsOpen && <span className="muted small">1st and 2nd level paths (arrays excluded) + your own paths</span>}
+                <span className="spacer" />
+                <button
+                  className="btn"
+                  title="Add a tag"
+                  disabled={!!newTag}
+                  onClick={() => {
+                    setTagError(null);
+                    setTagsOpen(true);
+                    setNewTag({ path: '', type: 'string', searchable: true, unique: false });
+                  }}
+                >
+                  + Add tag
+                </button>
+                <button className="btn primary" disabled={!tagsDirty || busy} onClick={saveTags}>
+                  {busy ? 'Saving…' : 'Save tags'}
+                </button>
+              </div>
+
+              {tagsOpen && (
+                <>
+              {tagError && (
+                <div className="alert error tag-error">
+                  <div><b>{tagError.reason}</b></div>
+                  {tagError.code !== 'TYPE_MISMATCH' && tagError.suggestions?.length > 0 && (
+                    <div className="suggest">
+                      Did you mean:{' '}
+                      {tagError.suggestions.map((p) => (
+                        <button
+                          key={p}
+                          className="chip"
+                          onClick={() => {
+                            const found = paths.find((x) => x.path === p);
+                            setNewTag({ ...(newTag || { searchable: true }), path: p, type: found?.type || newTag?.type || 'string' });
+                            setTagError(null);
+                          }}
+                        >
+                          {p}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {(tagError.code === 'PATH_NOT_IN_SAMPLE' || tagError.code === 'NOT_A_VALUE') && (
+                    <>
+                      <div className="muted small">
+                        The path must exist in the sample. Update the sample to include it, or create a new version of
+                        this API with an updated sample.
+                      </div>
+                      <div className="row gap">
+                        <button className="btn" onClick={openSampleEditor}>Update sample</button>
+                        <button
+                          className="btn"
+                          onClick={() => onNewVersion(`Add "${tagError.path}" to it, save, then add the tag.`)}
+                        >
+                          Create new version
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              <table className="grid">
+                <thead>
+                  <tr>
+                    <th>Path</th>
+                    <th>Level</th>
+                    <th>Type</th>
+                    <th className="center" title="Key of list items: lets PATCH paths address an item by this value">Unique</th>
+                    <th className="center">Searchable</th>
+                    <th className="center" title="Allowed values">Enum</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {newTag && (
+                    <tr className="new-tag-row">
+                      <td>
+                        <input
+                          autoFocus
+                          list={`paths-${api._id}`}
+                          placeholder="e.g. characteristic.name or agreementItem.productOfferingPrice.priceType"
+                          value={newTag.path}
+                          onChange={(e) => {
+                            const found = paths.find((x) => x.path === e.target.value);
+                            setNewTag({ ...newTag, path: e.target.value, type: found ? found.type : newTag.type });
+                          }}
+                          onKeyDown={(e) => e.key === 'Enter' && addTag()}
+                        />
+                        <datalist id={`paths-${api._id}`}>
+                          {paths.filter((p) => !tags.some((t) => t.path === p.path)).map((p) => (
+                            <option key={p.path} value={p.path}>{p.type}</option>
+                          ))}
+                        </datalist>
+                      </td>
+                      <td className="muted">{newTag.path.trim() ? newTag.path.trim().split('.').length : ''}</td>
+                      <td>
+                        <select value={newTag.type} onChange={(e) => setNewTag({ ...newTag, type: e.target.value })}>
+                          {TAG_TYPES.map((t) => <option key={t}>{t}</option>)}
+                        </select>
+                      </td>
+                      <td className="center">
+                        <input
+                          type="checkbox"
+                          title={isIdPath(newTag.path) ? 'Id fields are always unique' : 'Unique key of the list items'}
+                          checked={!!newTag.unique || isIdPath(newTag.path)}
+                          disabled={isIdPath(newTag.path)}
+                          onChange={(e) => setNewTag({ ...newTag, unique: e.target.checked })}
+                        />
+                      </td>
+                      <td className="center">
+                        <input
+                          type="checkbox"
+                          checked={newTag.searchable}
+                          onChange={(e) => setNewTag({ ...newTag, searchable: e.target.checked })}
+                        />
+                      </td>
+                      <td className="center">
+                        <EnumCell tag={newTag} onEdit={() => newTag.path.trim() && setEnumEdit('new')} />
+                      </td>
+                      <td className="nowrap">
+                        <button className="btn small primary" onClick={addTag} disabled={!newTag.path.trim()}>Add</button>{' '}
+                        <button className="btn small ghost" onClick={() => { setNewTag(null); setTagError(null); }}>Cancel</button>
+                      </td>
+                    </tr>
+                  )}
+                  {tags.map((t, i) => (
+                    <tr key={t.path}>
+                      <td>
+                        <code>{t.path}</code>{' '}
+                        {t.isNew ? <span className="pill">new</span> : t.autoAdded ? <span className="pill" title="Added automatically by a GET filter">from query</span> : t.custom && <span className="pill">custom</span>}
+                      </td>
+                      <td>{t.level}</td>
+                      <td className="muted">{t.type}</td>
+                      <td className="center">
+                        <input
+                          type="checkbox"
+                          title={isIdPath(t.path) ? 'Id fields are always unique' : 'Unique key of the list items'}
+                          checked={!!t.unique || isIdPath(t.path)}
+                          disabled={isIdPath(t.path)}
+                          onChange={(e) => setTags(tags.map((x, j) => (j === i ? { ...x, unique: e.target.checked } : x)))}
+                        />
+                      </td>
+                      <td className="center">
+                        <input
+                          type="checkbox"
+                          checked={!!t.searchable}
+                          onChange={(e) =>
+                            setTags(tags.map((x, j) => (j === i ? { ...x, searchable: e.target.checked } : x)))
+                          }
+                        />
+                      </td>
+                      <td className="center">
+                        <EnumCell tag={t} onEdit={() => setEnumEdit(i)} />
+                      </td>
+                      <td className="center">
+                        {t.custom && (
+                          <button className="btn small ghost danger" title="Remove tag" onClick={() => removeTag(t)}>✕</button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {tagsDirty && <p className="muted small">Unsaved changes – Save tags validates them against the sample.</p>}
+              {enumEdit !== null && (
+                <EnumModal
+                  apiKey={api._id}
+                  tag={enumEdit === 'new' ? { ...newTag, path: newTag.path.trim() } : tags[enumEdit]}
+                  onClose={() => setEnumEdit(null)}
+                  onSave={(values) => {
+                    if (enumEdit === 'new') setNewTag({ ...newTag, enum: values });
+                    else setTags(tags.map((x, j) => (j === enumEdit ? { ...x, enum: values.length ? values : undefined } : x)));
+                  }}
+                />
+              )}
+                </>
+              )}
+            </section>
+          )}
+
+          {mocking && (
+            <MockModal
+              api={api}
+              onClose={() => setMocking(false)}
+              onCreated={() => onChanged()}
+            />
+          )}
+
+          <div className="row end">
+            <button
+              className="btn danger ghost"
+              onClick={() => {
+                if (window.confirm(`Delete ${api.basePath} and all its records?`)) run(() => admin.remove(api._id), 'Deleted');
+              }}
+            >
+              Delete API
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

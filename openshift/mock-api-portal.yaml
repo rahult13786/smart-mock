@@ -1,0 +1,119 @@
+# Mock API Portal on OpenShift – oc apply -f openshift/mock-api-portal.yaml -n <project>
+# Contains: ImageStream, BuildConfig (Docker, binary upload), PVC, Deployment, Service, Route.
+# NeDB is a file database for ONE process: keep replicas at 1 (strategy Recreate).
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: mock-api-portal
+  labels: { app: mock-api-portal }
+spec:
+  lookupPolicy:
+    local: true
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: mock-api-portal
+  labels: { app: mock-api-portal }
+spec:
+  source:
+    type: Binary                      # oc start-build mock-api-portal --from-dir=. --follow
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+      # buildArgs:                    # offline / mirrored registries:
+      #   - name: NODE_IMAGE
+      #     value: my-registry.local/library/node:22-alpine
+      #   - name: NPM_REGISTRY
+      #     value: https://nexus.local/repository/npm/
+  output:
+    to:
+      kind: ImageStreamTag
+      name: mock-api-portal:latest
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mock-api-portal-data
+  labels: { app: mock-api-portal }
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-api-portal
+  labels: { app: mock-api-portal }
+  annotations:
+    # redeploy automatically when a new image is pushed to the ImageStream
+    image.openshift.io/triggers: >-
+      [{"from":{"kind":"ImageStreamTag","name":"mock-api-portal:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"app\")].image"}]
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: mock-api-portal }
+  template:
+    metadata:
+      labels: { app: mock-api-portal }
+    spec:
+      containers:
+        - name: app
+          image: mock-api-portal:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: DATA_DIR
+              value: /app/server/data
+          volumeMounts:
+            - name: data
+              mountPath: /app/server/data
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: mock-api-portal-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-api-portal
+  labels: { app: mock-api-portal }
+spec:
+  selector: { app: mock-api-portal }
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mock-api-portal
+  labels: { app: mock-api-portal }
+spec:
+  to:
+    kind: Service
+    name: mock-api-portal
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
