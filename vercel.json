@@ -8,9 +8,7 @@
     "api/index.js": { "includeFiles": "samples/**", "maxDuration": 30 }
   },
   "rewrites": [
-    { "source": "/api/:path*", "destination": "/api/index" },
-    { "source": "/apis/:path*", "destination": "/api/index" },
-    { "source": "/admin/:path*", "destination": "/api/index" },
+    { "source": "/(api|apis|admin)/(.*)", "destination": "/api/index" },
     { "source": "/health", "destination": "/api/index" },
     { "source": "/((?!assets/).*)", "destination": "/index.html" }
   ]

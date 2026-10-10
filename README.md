@@ -112,7 +112,11 @@ and every other path to the portal.
    * Check that the settings are not shown as *"Inferred from `render.yaml` configuration"*. If they are, the
      repository still has a `render.yaml` in its root – it must live in `deploy/` (pull the latest code, or move
      it, commit, push and import again).
-   * **Framework Preset**: *Other* (the `vercel.json` in the repo also sets this).
+   * **Framework Preset**: *Other*. (`"framework": null` in `vercel.json` is how Vercel writes *Other*.)
+   * The import form may not show the values from `vercel.json` – that is fine: Vercel applies `vercel.json`
+     when it **builds each deployment**, and its `framework`, `installCommand`, `buildCommand` and
+     `outputDirectory` override whatever the form / Project Settings say. **Root Directory must stay `./`**,
+     otherwise the `vercel.json` in the repository root is not read.
    * **Root Directory**: `./`.
    * **Build and Output Settings**: leave them – `vercel.json` sets install `npm run install:all`, build
      `npm run build`, output `frontend/dist`.
@@ -121,6 +125,24 @@ and every other path to the portal.
 4. Project → **Settings → Build and Deployment → Node.js Version**: choose **22.x** (then redeploy).
 
 CLI alternative: `npm i -g vercel` → `vercel` (preview) → `vercel --prod` (production), run in the project folder.
+
+**How to check that `vercel.json` was used** (after a deployment)
+1. Deployment → **Source**: `vercel.json` is listed at the top level (next to `package.json`, `api/`, `frontend/`).
+2. Deployment → **Build Logs**: the install step runs `npm run install:all` and the build step runs
+   `npm run build` (you see `vite build` and `frontend/dist/...` files). With the defaults instead you would
+   see a plain `npm install` and no `vite build`.
+3. Deployment → **Resources / Functions**: one function, `api/index.js` (shown as `/api/index`).
+4. In a terminal (replace the host):
+   ```bash
+   curl -s https://<project>.vercel.app/health                  # {"ok":true}            ← rewrite /health → function
+   curl -s https://<project>.vercel.app/admin/apis              # JSON list of APIs      ← rewrite /admin/*
+   curl -s https://<project>.vercel.app/api/agreement/v1?fields=id   # JSON records  ← rewrite /api/*
+   curl -sI https://<project>.vercel.app/browse/agreement__v1 | head -1   # 200, the portal page ← SPA rewrite
+   ```
+   Without `vercel.json` these return Vercel's 404 page (there is no file or function at those paths).
+   Any JSON answer from the API – even an API error like `FILTER_PATH_NOT_FOUND` – proves the rewrites
+   in `vercel.json` are active.
+5. CLI alternative: `vercel inspect <deployment-url> --logs` prints the same build log.
 
 **If the build or the site still behaves differently from `vercel.json`**
 * Project → **Settings → Build and Deployment**: Framework Preset *Other*; Install Command, Build Command and
