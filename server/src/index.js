@@ -18,6 +18,38 @@ app.use(cors({ exposedHeaders: ['X-Total-Count', 'X-Result-Count', 'X-Patch-Mode
 app.use(express.json({ limit: BODY_LIMIT, type: ['application/json', 'application/*+json'] }));
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+/*
+ * Remote persistence (Redis, see remote.js): requests are handled one at a time per instance;
+ * before each request the local copy is refreshed if another instance changed the data, and the
+ * changes a request made are written to Redis before its response is sent.
+ */
+if (store.remote.enabled) {
+  let queue = Promise.resolve();
+  app.use((req, res, next) => {
+    if (!/^\/(api|apis|admin)(\/|$)/.test(req.path)) return next(); // static files / health: no sync
+    let release;
+    const turn = new Promise((r) => (release = r));
+    const prev = queue;
+    queue = queue.then(() => turn);
+    let released = false;
+    const done = () => !released && ((released = true), release());
+    res.on('finish', done);
+    res.on('close', done);
+    const end = res.end;
+    res.end = function (...args) {
+      store
+        .flush()
+        .catch((e) => console.error('Remote store: saving failed –', e.message))
+        .finally(() => end.apply(res, args));
+      return res;
+    };
+    prev
+      .then(() => ready)
+      .then(() => store.ensureFresh())
+      .then(() => next(), (e) => next({ status: 503, message: `Remote store not reachable: ${e.message}` }));
+  });
+}
 const SLUG = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const VERSION = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,31}$/;
 const slugify = (s) =>
@@ -605,7 +637,7 @@ data.delete(
 );
 
 /* ------------------------------------------------------------------ */
-app.get('/health', (_req, res) => res.json({ ok: true }));
+app.get('/health', (_req, res) => res.json({ ok: true, storage: store.remote.enabled ? `redis ${store.remote.describe()}` : `files ${store.DATA_DIR}` }));
 
 // Serve the built portal when present (single-process production mode).
 const DIST = path.join(__dirname, '..', '..', 'frontend', 'dist');
@@ -663,7 +695,14 @@ async function seedFromEnv() {
 }
 
 // `ready` resolves once the registry is loaded (serverless hosts await it per request)
-const ready = store.init().then(seedFromEnv);
+const ready = store.init().then(async () => {
+  if (store.remote.enabled) {
+    const n = await store.pull();
+    console.log(`Remote store ${store.remote.describe()}: ${n} API(s) loaded`);
+  }
+  await seedFromEnv();
+  await store.flush();
+});
 
 if (require.main === module) {
   ready.then(() => {

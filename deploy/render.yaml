@@ -13,9 +13,14 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
-      # demo data registered on every start (free plan has no persistent disk); remove if not wanted
+      # demo data: registered on start when it doesn't exist yet; remove if not wanted
       - key: SEED_APIS
         value: agreement@v1=samples/agreement.json
+      # keep data on the free plan: Upstash Redis (free) – values are entered in the dashboard
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
     # --- Keep data across restarts (paid plan only): uncomment and change plan to "starter" ---
     # disk:
     #   name: mock-data

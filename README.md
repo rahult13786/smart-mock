@@ -26,6 +26,8 @@ npm run build && npm start   # http://localhost:4000
 ```
 
 Server env vars: `PORT` (4000), `DATA_DIR` (`server/data`), `BODY_LIMIT` (`50mb`),
+`UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` (or `KV_REST_API_URL` + `KV_REST_API_TOKEN`) to keep the data
+in Redis (see *Deploy*), `REMOTE_PREFIX`,
 `SEED_APIS` (optional demo data, e.g. `agreement@v1=samples/agreement.json` – registers and seeds the API on
 start if it doesn't exist; several entries separated by `;`).
 Server tests: `npm test` (runs `server/test/smoke.js` against `samples/agreement.json`).
@@ -37,15 +39,53 @@ In production there is **one** Node process: `npm run build` turns the React por
 
 | Target | Cost | Is the data kept? | Good for |
 |---|---|---|---|
-| **Render – Free** | free | **No** – lost on every restart, redeploy and after 15 min idle (the service sleeps; first request then takes ~1 min) | demos, trying it out |
+| **Vercel – Hobby + Upstash Redis (free)** | free | **yes** – in Redis (see *Keep data on Vercel / Render free*) | free hosting with real data |
+| Vercel – Hobby without Redis | free | **No** – only in `/tmp` of a function instance; lost when the instance is recycled (can be seconds) | nothing serious |
+| **Render – Free + Upstash Redis** | free | **yes** – in Redis | free hosting with real data |
+| Render – Free without Redis | free | **No** – lost on every restart, redeploy and after 15 min idle (the service sleeps; first request then takes ~1 min) | demos |
 | Render – paid + disk | paid | yes (persistent disk) | small teams |
-| **Vercel – Hobby** | free | **No** – kept in `/tmp` of a function instance only; instances are recycled and may not share data | quick demos |
 | **OpenShift (your cluster)** | your cluster | **yes** (PersistentVolumeClaim) | team use, offline networks |
 | Docker / Podman on any server | – | yes (volume) | on-prem without OpenShift |
 
-NeDB is a file database used by **one** process. Run exactly **one** instance/replica.
-On hosts without persistent storage, set `SEED_APIS=agreement@v1=samples/agreement.json` so a demo API is
+NeDB is a file database used by **one** process. With local files run exactly **one** instance/replica
+(with Redis, several instances are fine – they share the data). On hosts without persistent storage, set `SEED_APIS=agreement@v1=samples/agreement.json` so a demo API is
 re-created on every start.
+
+### Keep data on Vercel / Render free – Upstash Redis (free)
+
+Vercel functions (and Render's free instances) have no permanent disk: whatever the API writes is gone when
+the instance is recycled – on Vercel that can happen after a few seconds without traffic, or a new instance
+starts with empty storage. Set two environment variables and the API keeps its data in a Redis database
+instead; the local NeDB files are then only a working copy:
+
+* before each API request the instance checks a version counter in Redis and reloads if another instance changed something;
+* the changes a request makes are written to Redis **before** its response is sent;
+* each record is stored separately (registry, sample and records per API), so no request gets near Upstash's
+  10 MB request limit. Upstash free plan: 250 MB data, 500K commands / month.
+
+| Variable | Value |
+|---|---|
+| `UPSTASH_REDIS_REST_URL` **or** `KV_REST_API_URL` | REST URL of the database (`https://….upstash.io`) |
+| `UPSTASH_REDIS_REST_TOKEN` **or** `KV_REST_API_TOKEN` | REST token (not the read-only one) |
+| `REMOTE_PREFIX` (optional) | key prefix, default `mockportal:` – use different prefixes to share one database between deployments |
+
+**Vercel (Marketplace integration – sets the variables for you)**
+1. Vercel → your project → **Storage** tab → **Create Database** (or **Marketplace**) → **Upstash** → *Upstash for
+   Redis* → choose the **Free** plan and a region close to your functions → **Create**.
+2. **Connect** it to the project (all environments). This adds `KV_REST_API_URL` and `KV_REST_API_TOKEN`
+   (and similar variables) to Project → Settings → Environment Variables.
+3. **Redeploy** (Deployments → ⋯ → Redeploy) – environment variables only apply to new deployments.
+4. Check: `https://<project>.vercel.app/health` must show `"storage":"redis …upstash.io (prefix mockportal:)"`.
+   If it shows `"storage":"files /tmp/mock-api-data"`, the variables are missing in that deployment.
+
+**Upstash console (works for Vercel, Render, anywhere)**
+1. https://console.upstash.com → **Create Database** → type Redis, plan Free, a region near your host → Create.
+2. On the database page, section **REST API**: copy `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+3. Add both as environment variables (Vercel: Settings → Environment Variables; Render: service → Environment),
+   then redeploy / restart. Check `/health` as above.
+
+With Redis configured, `SEED_APIS` only creates the demo API when it is not in Redis yet – it no longer comes
+back after you delete it, and your own changes are kept.
 
 ### Step 0 – put the project in a Git repository (needed for Render and Vercel)
 
@@ -123,6 +163,9 @@ and every other path to the portal.
    * **Environment Variables**: `SEED_APIS` = `agreement@v1=samples/agreement.json` (recommended, see below).
 3. Click **Deploy**. When it finishes, open the `https://<project>.vercel.app` URL.
 4. Project → **Settings → Build and Deployment → Node.js Version**: choose **22.x** (then redeploy).
+5. **Keep the data (required for real use)**: Project → **Storage** → add **Upstash for Redis** (free) and connect
+   it, then redeploy – see *Keep data on Vercel / Render free*. Without it, registered APIs and records vanish
+   whenever Vercel recycles the function (often within seconds).
 
 CLI alternative: `npm i -g vercel` → `vercel` (preview) → `vercel --prod` (production), run in the project folder.
 
@@ -152,9 +195,9 @@ CLI alternative: `npm i -g vercel` → `vercel` (preview) → `vercel --prod` (p
   list `api/index.js`. Check `https://<project>.vercel.app/health` → `{"ok":true}`.
 
 **Limits to know**
-* Data is written to `/tmp` inside a function instance. It survives only while that instance is alive and is not
-  shared between instances – so it can vanish or differ between requests. `SEED_APIS` puts the demo API back
-  whenever a new instance starts. Use Render-with-disk or OpenShift for data that must be kept.
+* **Without Redis**, data is written to `/tmp` inside a function instance. It survives only while that instance is
+  alive and is not shared between instances – so it vanishes or differs between requests (APIs "disappear"
+  after a few seconds). **Add Upstash Redis** (section *Keep data on Vercel / Render free*) – then the data is kept.
 * Request bodies sent to a Vercel function are limited (about 4.5 MB), so very large samples or POSTs may be rejected.
 * Each request can run up to 30 s (`maxDuration` in `vercel.json`).
 
