@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { humanize, isObj } from '../util/value.js';
 
-const ID_KEY = /^id$/i; // "id", "Id", "ID"
+const ID_KEY = /^id$/i;
 const label = (path) => path.map((p) => (typeof p === 'number' ? `[${p}]` : humanize(p))).join(' › ');
 
-/** Replace `from` with `to` in every string value (keys untouched). Returns {value, count}. */
 export function replaceInValues(node, from, to) {
   let count = 0;
   const walk = (v) => {
@@ -41,10 +40,6 @@ function Modal({ title, children, footer, onClose, wide }) {
   );
 }
 
-/**
- * Copy a whole record (list page / details page) and save it as a new record.
- * The user must give a new id; optionally the old id is replaced everywhere it appears in values.
- */
 export function CopyRecordModal({ client, sourceId, onClose, onCopied }) {
   const [source, setSource] = useState(null);
   const [newId, setNewId] = useState(`${sourceId}-copy`);
@@ -56,7 +51,6 @@ export function CopyRecordModal({ client, sourceId, onClose, onCopied }) {
     client.get(sourceId).then(setSource).catch((e) => setError(e.message));
   }, [client, sourceId]);
 
-  // occurrences of the old id inside the record, other than the root "id" itself
   const occurrences = useMemo(() => {
     if (!source) return 0;
     const { id: _ignored, ...rest } = source;
@@ -72,7 +66,7 @@ export function CopyRecordModal({ client, sourceId, onClose, onCopied }) {
     try {
       let copy = replaceAll ? replaceInValues(source, String(sourceId), id).value : structuredClone(source);
       copy = { ...copy, id: typeof source.id === 'number' && !Number.isNaN(Number(id)) ? Number(id) : id };
-      const rec = await client.create(copy);
+      const rec = await client.create(copy, { copy: true });
       onCopied(rec);
     } catch (e) {
       setError(e.status === 409 ? `A record with id "${id}" already exists – choose another id` : e.message);
@@ -115,10 +109,6 @@ export function CopyRecordModal({ client, sourceId, onClose, onCopied }) {
   );
 }
 
-/**
- * Copy one item of a list. If the item has an "id"/"Id" key at its own root level, the user must
- * give a new value for it (unique among its siblings). The copy is inserted right after the original.
- */
 export function CopyItemModal({ path, item, siblings, onClose, onSave }) {
   const idKeys = isObj(item) ? Object.keys(item).filter((k) => ID_KEY.test(k)) : [];
   const [values, setValues] = useState(() =>

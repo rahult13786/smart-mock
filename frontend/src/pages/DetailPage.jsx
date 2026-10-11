@@ -3,28 +3,24 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { compare } from 'fast-json-patch';
 import { data } from '../api.js';
 import { useApis } from '../App.jsx';
-import { createMergePatch, getIn, humanize, isObj, isScalar, removeIn, setIn, summarize, tagPathOf, toPointer } from '../util/value.js';
+import { createMergePatch, idFirstEntries, getIn, humanize, isObj, isScalar, removeIn, setIn, summarize, tagPathOf, toPointer } from '../util/value.js';
 import ScalarInput from '../components/ScalarInput.jsx';
 import ArrayTable from '../components/ArrayTable.jsx';
 import ObjectModal from '../components/ObjectModal.jsx';
 import { EditorContext } from '../components/editor.js';
 import { CopyItemModal, CopyRecordModal } from '../components/CopyModals.jsx';
 import { RawJsonModal } from '../components/RawJson.jsx';
+import JsonTree from '../components/JsonTree.jsx';
 import ConfirmModal from '../components/ConfirmModal.jsx';
 
 const pathLabel = (path) => path.map((p) => (typeof p === 'number' ? `[${p}]` : humanize(p))).join(' › ') || 'Record';
 
-/**
- * Record details page, built dynamically from the JSON:
- *  1. root scalar fields at the top (id read-only); root objects shown as links -> popup
- *  2. every root list (array) – and root object – rendered as a list section, in JSON order
- */
 export default function DetailPage() {
   const { key, id } = useParams();
   const { apis } = useApis();
   const api = apis.find((a) => a._id === key);
   const basePath = api?.basePath;
-  const client = useMemo(() => (basePath ? data(basePath) : null), [basePath]); // stable across config refreshes
+  const client = useMemo(() => (basePath ? data(basePath) : null), [basePath]);
 
   const [original, setOriginal] = useState(null);
   const [draft, setDraft] = useState(null);
@@ -36,11 +32,11 @@ export default function DetailPage() {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const [raw, setRaw] = useState(false);
-  const [expanded, setExpanded] = useState({}); // list sections start collapsed; opened on demand
-  const [copying, setCopying] = useState(null); // {path, onDone} – copy one list item
-  const [rawPath, setRawPath] = useState(null); // raw JSON editor for a list heading
+  const [expanded, setExpanded] = useState({});
+  const [copying, setCopying] = useState(null);
+  const [rawPath, setRawPath] = useState(null);
   const [copyRecord, setCopyRecord] = useState(false);
-  const [removing, setRemoving] = useState(null); // {path, onDone} – node delete confirmation
+  const [removing, setRemoving] = useState(null);
   const [deletingRecord, setDeletingRecord] = useState(false);
   const navigate = useNavigate();
 
@@ -61,7 +57,6 @@ export default function DetailPage() {
     load();
   }, [load]);
 
-  // a different record starts with every list section collapsed again
   useEffect(() => setExpanded({}), [id]);
 
   const setAt = useCallback((path, value) => {
@@ -70,7 +65,6 @@ export default function DetailPage() {
     setNotice('');
   }, []);
 
-  // open a popup for a path; nested paths push onto the current popup stack
   const open = useCallback((path) => {
     setStack((st) => {
       const top = st[st.length - 1];
@@ -79,13 +73,9 @@ export default function DetailPage() {
     });
   }, []);
 
-  /**
-   * Save a change to the stored JSON straight away with JSON Patch, then refresh the page from the
-   * server response. Unsaved edits elsewhere on the page are kept by applying the same change to the draft.
-   */
   const commit = useCallback(
-    async (ops, applyToDraft, message) => {
-      const rec = await client.jsonPatch(id, ops);
+    async (ops, applyToDraft, message, opts) => {
+      const rec = await client.jsonPatch(id, ops, opts);
       const hadEdits = draft !== original;
       setOriginal(rec);
       setDraft(hadEdits ? (d) => applyToDraft(d) : rec);
@@ -95,7 +85,6 @@ export default function DetailPage() {
     [client, id, draft, original]
   );
 
-  // insert items into the list at `path` (at `index`, or at the end)
   const insertItems = useCallback(
     (path, items, index, verb = 'Added') => {
       const ptr = toPointer(path);
@@ -106,34 +95,30 @@ export default function DetailPage() {
           const arr = getIn(d, path) || [];
           return setIn(d, path, index == null ? [...arr, ...items] : [...arr.slice(0, index), ...items, ...arr.slice(index)]);
         },
-        `${verb} ${items.length} item${items.length === 1 ? '' : 's'} ${index == null ? 'to' : 'in'} ${pathLabel(path)} and saved.`
+        `${verb} ${items.length} item${items.length === 1 ? '' : 's'} ${index == null ? 'to' : 'in'} ${pathLabel(path)} and saved.`,
+        { copy: verb === 'Copied' }
       );
     },
     [commit]
   );
 
-  // [+] Add on a list
   const addItems = useCallback((path, items) => insertItems(path, items), [insertItems]);
 
-  // Raw JSON editors: replace the node at `path`
   const saveAt = useCallback(
     (path, value) =>
       commit([{ op: 'replace', path: toPointer(path), value }], (d) => setIn(d, path, value), `Saved raw JSON of ${pathLabel(path)}.`),
     [commit]
   );
 
-  // Delete a node (list item, list, object) from the stored record – JSON Patch "remove"
   const removeAt = useCallback(
     async (path) => {
       await commit([{ op: 'remove', path: toPointer(path) }], (d) => removeIn(d, path), `Deleted ${pathLabel(path)} from the record.`);
-      // close popups that showed the deleted node (or something inside it / after it in the same list)
       setStack((st) => st.filter((p) => p.length < path.length));
     },
     [commit]
   );
   const confirmRemove = useCallback((path, onDone) => setRemoving({ path, onDone }), []);
 
-  // allowed values (enum) configured on the API's tags, looked up by concrete path
   const enumMap = useMemo(() => new Map((api?.tags || []).filter((t) => t.enum?.length).map((t) => [t.path, t.enum])), [api]);
   const enumFor = useCallback((path) => enumMap.get(tagPathOf(path)), [enumMap]);
 
@@ -156,7 +141,7 @@ export default function DetailPage() {
   }
   if (!draft) return <div className="page"><p className="muted">Loading record…</p></div>;
 
-  const entries = Object.entries(draft);
+  const entries = idFirstEntries(draft);
   const headerFields = entries.filter(([, v]) => isScalar(v) || isObj(v));
   const sections = entries.filter(([, v]) => Array.isArray(v) || isObj(v));
   const dirty = draft !== original;
@@ -218,7 +203,9 @@ export default function DetailPage() {
         {notice && <div className={`alert ${notice.startsWith('Save failed') ? 'error' : 'ok'}`}>{notice}</div>}
 
         {raw ? (
-          <pre className="card raw">{JSON.stringify(draft, null, 2)}</pre>
+          <div className="card raw tree-box">
+            <JsonTree value={draft} />
+          </div>
         ) : (
           <>
             <div className="card fields">

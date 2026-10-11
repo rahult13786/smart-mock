@@ -7,27 +7,24 @@ const store = require('./store');
 const { computeTags, safeKey, validateTags, listPaths, inspectPath, suggest, normalizePath, splitPath, listContainer, duplicateKeys, isIdPath, withIdUnique } = require('./tags');
 const { detectMode, applyPatch, uniqueKeys } = require('./patch');
 const { enumViolations, enumError, normalizeEnum, locate } = require('./enums');
+const accounts = require('./accounts');
 const { parseFields, project, parseSort, sortDocs, splitOperator } = require('./query');
 const { idPaths, fieldPaths, buildMocks, currentValues, MAX_MOCKS } = require('./mockgen');
+const { buildRegex, compileRegex, examples, fillIds, fillMissing, applyMaps, mapCandidates, mustViolations, mustError, tagPathOfPointer, createOn } = require('./generate');
 
 const PORT = Number(process.env.PORT || 4000);
 const BODY_LIMIT = process.env.BODY_LIMIT || '50mb';
 
 const app = express();
-app.use(cors({ exposedHeaders: ['X-Total-Count', 'X-Result-Count', 'X-Patch-Mode', 'X-Patch-Resolved', 'X-Search-Config-Updated', 'X-Not-Found-Ids'] }));
+app.use(cors({ exposedHeaders: ['Location', 'X-Total-Count', 'X-Result-Count', 'X-Patch-Mode', 'X-Patch-Resolved', 'X-Search-Config-Updated', 'X-Not-Found-Ids'] }));
 app.use(express.json({ limit: BODY_LIMIT, type: ['application/json', 'application/*+json'] }));
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-/*
- * Remote persistence (Redis, see remote.js): requests are handled one at a time per instance;
- * before each request the local copy is refreshed if another instance changed the data, and the
- * changes a request made are written to Redis before its response is sent.
- */
 if (store.remote.enabled) {
   let queue = Promise.resolve();
   app.use((req, res, next) => {
-    if (!/^\/(api|apis|admin)(\/|$)/.test(req.path)) return next(); // static files / health: no sync
+    if (!/^\/(api|apis|admin)(\/|$)/.test(req.path)) return next();
     let release;
     const turn = new Promise((r) => (release = r));
     const prev = queue;
@@ -61,12 +58,12 @@ const slugify = (s) =>
 
 const asRecords = (sample) => (Array.isArray(sample) ? sample : [sample]);
 
-/** Save a sample: derive tags and (optionally) upsert its records as data. */
 async function applySample(api, sample, records, seed = true) {
   store.saveSample(api._id, sample);
   const { tags, dropped } = computeTags(records, api.tags);
+  const searchKey = (list) => list.filter((t) => t.searchable).map((t) => t.path).sort().join('|');
   const updated = await store.updateApi(api._id, { hasSample: true, tags });
-  if (dropped.length) await store.reindex(updated);
+  if (dropped.length || searchKey(tags) !== searchKey(api.tags || [])) await store.reindex(updated);
   let seeded = 0;
   if (seed) {
     const ds = await store.getDatastore(api._id);
@@ -82,9 +79,6 @@ async function applySample(api, sample, records, seed = true) {
 }
 const parseMaybe = (v) => (typeof v === 'string' ? JSON.parse(v) : v);
 
-/* ------------------------------------------------------------------ */
-/* Admin API – used by the portal to register / configure mock APIs    */
-/* ------------------------------------------------------------------ */
 const admin = express.Router();
 
 admin.get(
@@ -131,7 +125,6 @@ admin.get('/apis/:key/sample', (req, res) => {
   res.type('application/json').send(s);
 });
 
-// Save the sample JSON: derives the tag list and (by default) seeds the records.
 admin.put(
   '/apis/:key/sample',
   wrap(async (req, res) => {
@@ -157,7 +150,6 @@ admin.put(
 const NEW_VERSION_HINT =
   'Update the sample JSON of this API so it contains the path, or create a new version of the API with an updated sample.';
 
-// All value paths found in the sample (used by the portal for path suggestions)
 admin.get(
   '/apis/:key/paths',
   wrap(async (req, res) => {
@@ -166,7 +158,6 @@ admin.get(
   })
 );
 
-// Distinct values found at a path (sample + stored records) – used to prefill enum values
 admin.get(
   '/apis/:key/values',
   wrap(async (req, res) => {
@@ -189,8 +180,6 @@ admin.get(
   })
 );
 
-/* ---- Create mocks ------------------------------------------------------------------------ */
-// source: "sample:<index>" (a record of the sample) or "record:<id>" (a stored record)
 async function mockTemplate(api, source = 'sample:0') {
   const [kind, ...rest] = String(source).split(':');
   const ref = rest.join(':');
@@ -219,7 +208,6 @@ admin.get(
   })
 );
 
-// current value(s) of a field in the template, optionally only in list items matching a filter
 admin.get(
   '/apis/:key/mocks/current',
   wrap(async (req, res) => {
@@ -241,7 +229,7 @@ admin.post(
     const existing = new Set((await ds.findAsync({}, { _id: 1 })).map((d) => d._id));
     const { records, warnings } = buildMocks(template, req.body || {}, api.tags, existing);
     records.forEach((r, i) => {
-      const bad = enumViolations(r, api.tags, template); // only values the mock introduced
+      const bad = enumViolations(r, api.tags, template);
       if (bad.length) {
         const err = enumError(bad);
         err.message = `Mock ${i + 1}: ${err.message}`;
@@ -257,7 +245,37 @@ admin.post(
   })
 );
 
-// Validate tags against the sample without saving
+admin.get(
+  '/apis/:key/tags/map',
+  wrap(async (req, res) => {
+    const api = findApi(req, res);
+    if (!api) return;
+    const p = normalizePath(req.query.path);
+    if (!p) return res.status(400).json({ error: 'path is required' });
+    if (isIdPath(p)) return res.status(400).json({ error: 'Id tags use a regex, not a map' });
+    const tag = api.tags.find((t) => t.path === p);
+    res.json({ path: p, candidates: mapCandidates(await store.referenceRecords(api._id), p, listPaths), map: tag?.map || null });
+  })
+);
+
+admin.get(
+  '/apis/:key/tags/regex',
+  wrap(async (req, res) => {
+    const api = findApi(req, res);
+    if (!api) return;
+    const p = normalizePath(req.query.path);
+    if (!isIdPath(p)) return res.status(400).json({ error: 'A regex can only be configured for id tags' });
+    const tag = api.tags.find((t) => t.path === p) || { path: p, type: 'string' };
+    if (req.query.pattern !== undefined) {
+      compileRegex(req.query.pattern);
+      return res.json({ path: p, pattern: req.query.pattern, examples: examples(req.query.pattern, tag.type) });
+    }
+    const values = (await store.referenceRecords(api._id)).flatMap((r) => locate(r, p).map((x) => x.value));
+    const built = buildRegex(values);
+    res.json({ path: p, values: built.count, exact: built.exact, built: built.pattern, examples: built.pattern ? examples(built.pattern, tag.type) : [], regex: tag.regex || null });
+  })
+);
+
 admin.post(
   '/apis/:key/tags/validate',
   wrap(async (req, res) => {
@@ -269,10 +287,6 @@ admin.post(
   })
 );
 
-// Save tag configuration. Body: {tags:[{path, type?, searchable, enum?, custom?, remove?}]}
-//  - enum: allowed values (array; [] or null removes it). Values must match the tag type.
-//  - existing tags: searchable flag updated (custom ones may be removed with remove:true)
-//  - new paths: added as custom tags after validation against the sample (all-or-nothing)
 admin.put(
   '/apis/:key/tags',
   wrap(async (req, res) => {
@@ -312,14 +326,51 @@ admin.put(
         withEnum({ path: t.path, level: splitPath(t.path).length, type: t.type, searchable: t.searchable !== false, custom: true }, t)
       )
     );
-    // unique: flag on a field of list items, used as an alternative key in PATCH paths
     tags = tags.map((t) => {
       const x = incoming.find((y) => y.path === t.path && !y.remove);
       if (!x || x.unique === undefined) return t;
       const { unique: _u, uniqueIn: _ui, ...rest } = t;
       return x.unique ? { ...rest, unique: true } : rest;
     });
-    tags = withIdUnique(tags); // id tags are always unique – cannot be unchecked
+    tags = withIdUnique(tags);
+    const configRefs = await store.referenceRecords(api._id);
+    tags = tags.map((t) => {
+      const x = incoming.find((y) => y.path === t.path && !y.remove);
+      if (!x) return t;
+      let next = { ...t };
+      if (x.must !== undefined) {
+        if (x.must) next.must = true;
+        else delete next.must;
+      }
+      if (x.create !== undefined) next.create = !!x.create;
+      if (!isIdPath(t.path) && x.map !== undefined) {
+        if (!x.map) delete next.map;
+        else {
+          const m = { enabled: !!x.map.enabled, source: normalizePath(x.map.source) };
+          if (m.enabled || m.source) {
+            const allowed = mapCandidates(configRefs, t.path, listPaths).map((c) => c.path);
+            if (!allowed.includes(m.source)) {
+              throw { status: 400, code: 'INVALID_MAP', message: `"${m.source || '(none)'}" cannot be mapped to "${t.path}" – choose a sibling field or a field of a parent node`, allowed };
+            }
+          }
+          next.map = m;
+        }
+      }
+      if (next.enum?.length && next.map) delete next.map;
+      if (isIdPath(t.path)) {
+        if (x.regex !== undefined) {
+          if (!x.regex) delete next.regex;
+          else {
+            const r = { enabled: !!x.regex.enabled, override: !!x.regex.override, built: String(x.regex.built || ''), pattern: String(x.regex.pattern || '') };
+            if (r.built) compileRegex(r.built, `Build regex of "${t.path}"`);
+            if (r.override) compileRegex(r.pattern, `Override regex of "${t.path}"`);
+            if (r.enabled && !(r.override ? r.pattern : r.built)) throw { status: 400, code: 'INVALID_REGEX', message: `Regex of "${t.path}" is empty – it cannot be enabled` };
+            next.regex = r;
+          }
+        }
+      }
+      return next;
+    });
     const uniqueWarnings = [];
     const uniques = tags.filter((t) => t.unique);
     if (uniques.length) {
@@ -330,8 +381,12 @@ admin.put(
         const c = listContainer(refs, t.path);
         const field = t.path.split('.').pop();
         if (isIdPath(t.path)) {
-          if (c.listPath !== null) t.uniqueIn = c.listPath;
-          continue; // ids: always unique, no further rules
+          if (c.listPath !== null) {
+            t.uniqueIn = c.listPath;
+            const dups = duplicateKeys(refs, c.listPath, field);
+            if (dups.length) uniqueWarnings.push({ path: t.path, duplicates: dups.slice(0, 5), count: dups.length });
+          }
+          continue;
         }
         if (c.listPath === null) {
           problems.push(`"${t.path}" is not a field of list items – unique can only be set on fields inside a list (e.g. characteristic.name)`);
@@ -352,7 +407,6 @@ admin.put(
     }
     const updated = await store.updateApi(api._id, { tags });
     const reindexed = await store.reindex(updated);
-    // report stored values that are outside a (new) enum – they stay, but cannot be re-sent
     const enumTags = tags.filter((t) => t.enum?.length);
     const enumWarnings = [];
     if (enumTags.length) {
@@ -382,15 +436,11 @@ admin.delete(
   })
 );
 
+app.use('/admin', accounts.router);
 app.use('/admin', admin);
 
-/* ------------------------------------------------------------------ */
-/* Mock data API – /api/{name}/{version}[/{id}]                        */
-/* ------------------------------------------------------------------ */
 const data = express.Router({ mergeParams: true });
 
-// Resolve the basePath once per request from the in-memory registry.
-// Both /api/{name}/{version} and /apis/{name}/{version} are accepted.
 app.use(
   ['/api/:name/:version', '/apis/:name/:version'],
   wrap(async (req, res, next) => {
@@ -409,7 +459,7 @@ app.use(
   data
 );
 
-const RESERVED = new Set(['view', 'limit', 'skip', 'offset', 'q', 'mode', 'sort', 'fields', 'pathMode']);
+const RESERVED = new Set(['view', 'limit', 'skip', 'offset', 'q', 'mode', 'sort', 'fields', 'pathMode', 'generate']);
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const splitList = (raw) =>
   (Array.isArray(raw) ? raw : [raw])
@@ -417,13 +467,6 @@ const splitList = (raw) =>
     .map((v) => v.trim())
     .filter(Boolean);
 
-/**
- * Make sure every filter param is a searchable tag.
- *  - configured but not searchable -> switched on
- *  - not configured but present in the sample -> added as a searchable tag
- *  - not in the sample -> 400 with suggestions
- * Records are re-indexed once when the configuration changes.
- */
 async function ensureSearchable(api, paths) {
   const missing = (a) => paths.filter((p) => !a.tags.some((t) => t.path === p && t.searchable));
   if (!missing(api).length) return { api, changed: [] };
@@ -447,7 +490,7 @@ async function ensureSearchable(api, paths) {
           hint: NEW_VERSION_HINT,
         };
       }
-      tags.push({ path: p, level: splitPath(p).length, type: info.types[0], searchable: true, custom: true, autoAdded: true, ...(isIdPath(p) ? { unique: true } : {}) });
+      tags.push({ path: p, level: splitPath(p).length, type: info.types[0], searchable: true, custom: true, autoAdded: true, ...(p === 'id' ? { unique: true } : {}) });
     }
     current = await store.updateApi(api._id, { tags });
     await store.reindex(current);
@@ -484,18 +527,19 @@ async function buildQuery(api, query) {
   return { query: and.length ? { $and: and } : {}, ids, changed };
 }
 
+async function storedRecords(ds, ids) {
+  const docs = await ds.findAsync({ _id: { $in: ids } }, { body: 1 });
+  const byId = new Map(docs.map((d) => [d._id, JSON.parse(d.body)]));
+  const missing = ids.filter((id) => !byId.has(id));
+  if (missing.length) throw { status: 500, message: `Record ${missing.join(', ')} was not stored` };
+  return ids.map((id) => byId.get(id));
+}
+
 const sendRecords = (res, bodies, fields) => {
   if (!fields) return res.type('application/json').send(`[${bodies.join(',')}]`);
   res.json(bodies.map((b) => project(JSON.parse(b), fields)));
 };
 
-// GET collection (TMF630 style). Default: full records (array).
-//  filter : ?status=Active (equality, case-insensitive) · ?status=a,b (OR) · ?name.like=x · ?status.ne=x
-//           ?id=a,b,c -> records with those ids, in the requested order
-//  fields : ?fields=id,name,item.id,item.status -> only those attributes (id always included)
-//  sort   : ?sort=-updatedAt,name ("-" descending)
-//  paging : ?offset=0&limit=20 (skip = alias of offset) · X-Total-Count / X-Result-Count headers
-//  ?view=summary -> {total, items:[root scalar fields]} (used by the portal list)
 data.get(
   '/',
   wrap(async (req, res) => {
@@ -511,7 +555,6 @@ data.get(
     let total;
     let docs;
     if (sort) {
-      // sort in memory on the root fields (summary) – bodies are read only for dotted sort keys
       const needBody = sort.some((k) => k.path.includes('.'));
       const all = await req.ds.findAsync(q, { summary: 1, createdAt: 1, updatedAt: 1, ...(needBody ? { body: 1 } : {}) });
       const cache = new Map();
@@ -561,7 +604,6 @@ data.get(
   })
 );
 
-// POST: a single object or an array of objects. id is generated when missing.
 data.post(
   '/',
   wrap(async (req, res) => {
@@ -570,6 +612,30 @@ data.post(
     const records = many ? body : [body];
     if (!records.length || records.some((r) => !r || typeof r !== 'object' || Array.isArray(r))) {
       return res.status(400).json({ error: 'Body must be a JSON object or an array of JSON objects' });
+    }
+    const generate = String(req.query.generate ?? '').toLowerCase() !== 'false';
+    const tags = req.mockApi.tags;
+    const refs = await store.referenceRecords(req.mockApi._id);
+    const rootTag = tags.find((t) => t.path === 'id');
+    const rootGenerated = generate && rootTag && createOn(rootTag);
+    if (generate) {
+      for (const [i, r] of records.entries()) {
+        records[i] = fillIds(r, tags, { refs }).value;
+        records[i] = fillMissing(records[i], tags, { refs }).value;
+      }
+    }
+    if (rootGenerated) {
+      for (const r of records) {
+        for (let n = 0; n < 10 && (await req.ds.findOneAsync({ _id: String(r.id) })); n++) {
+          r.id = fillIds({ id: r.id }, [rootTag], { refs }).value.id;
+        }
+      }
+    }
+    for (const [i, r] of records.entries()) {
+      if (r.id == null || r.id === '') r.id = crypto.randomUUID();
+      if (generate) records[i] = applyMaps(r, tags).value;
+      const bad = mustViolations(records[i], tags, { refs });
+      if (bad.length) throw mustError(bad, many ? `Record [${i}]: ` : '');
     }
     const ids = new Set();
     for (const r of records) {
@@ -591,11 +657,12 @@ data.post(
       return res.status(409).json({ error: `Record already exists: ${clash.map((c) => c._id).join(', ')}` });
     }
     await req.ds.insertAsync(records.map((r) => store.toDoc(req.mockApi, r)));
-    res.status(201).json(many ? records : records[0]);
+    const stored = await storedRecords(req.ds, records.map((r) => String(r.id)));
+    if (!many) res.set('Location', `${req.mockApi.basePath}/${encodeURIComponent(stored[0].id)}`);
+    res.status(201).json(many ? stored : stored[0]);
   })
 );
 
-// PATCH: JSON Patch (RFC 6902) or JSON Merge Patch (RFC 7396)
 data.patch(
   '/:id',
   wrap(async (req, res) => {
@@ -605,9 +672,23 @@ data.patch(
       const doc = await req.ds.findOneAsync({ _id: id });
       if (!doc) throw { status: 404, message: `Record ${id} not found` };
       const record = JSON.parse(doc.body);
-      // list items may be addressed by id, unique key or index (?pathMode=index: index only)
       const keys = String(req.query.pathMode || '').toLowerCase() === 'index' ? null : uniqueKeys(req.mockApi.tags);
-      const { doc: next, resolved } = applyPatch(record, req.body, mode, keys);
+      const generate = String(req.query.generate ?? '').toLowerCase() !== 'false';
+      const tags = req.mockApi.tags;
+      const refs = await store.referenceRecords(req.mockApi._id);
+      const onAdd = (op, current) => {
+        const base = tagPathOfPointer(current, op.path);
+        let value = op.value;
+        if (generate) {
+          value = fillIds(structuredClone(value), tags, { base, doc: current, refs, skipRoot: true }).value;
+          value = fillMissing(value, tags, { base, refs }).value;
+          value = applyMaps(value, tags, { base, pointer: op.path, doc: current }).value;
+        }
+        const bad = mustViolations(value, tags, { base, pointer: op.path, refs });
+        if (bad.length) throw mustError(bad);
+        return value;
+      };
+      const { doc: next, resolved } = applyPatch(record, req.body, mode, keys, onAdd);
       if (resolved.length) {
         const h = JSON.stringify(resolved.map((r) => ({ [r.path]: r.resolvedPath })));
         if (h.length < 4000) res.set('X-Patch-Resolved', h);
@@ -619,13 +700,12 @@ data.patch(
       const bad = enumViolations(next, req.mockApi.tags, record);
       if (bad.length) throw enumError(bad);
       await req.ds.updateAsync({ _id: id }, store.toDoc(req.mockApi, next, doc), {});
-      return next;
+      return (await storedRecords(req.ds, [id]))[0];
     });
     res.set('X-Patch-Mode', mode).json(result);
   })
 );
 
-// DELETE: remove a record
 data.delete(
   '/:id',
   wrap(async (req, res) => {
@@ -636,17 +716,14 @@ data.delete(
   })
 );
 
-/* ------------------------------------------------------------------ */
 app.get('/health', (_req, res) => res.json({ ok: true, storage: store.remote.enabled ? `redis ${store.remote.describe()}` : `files ${store.DATA_DIR}` }));
 
-// Serve the built portal when present (single-process production mode).
 const DIST = path.join(__dirname, '..', '..', 'frontend', 'dist');
 if (fs.existsSync(DIST)) {
   app.use(express.static(DIST));
   app.get(/^\/(?!apis?(\/|$)|admin(\/|$)|health$).*/, (_req, res) => res.sendFile(path.join(DIST, 'index.html')));
 }
 
-// Anything else under /api, /apis or /admin -> JSON 404 (never an HTML error page)
 app.use((req, res) => {
   res.status(404).json({
     error: `No route for ${req.method} ${req.path}`,
@@ -655,7 +732,6 @@ app.use((req, res) => {
   });
 });
 
-// Errors
 app.use((err, _req, res, _next) => {
   if (err?.type === 'entity.parse.failed') return res.status(400).json({ error: `Invalid JSON body: ${err.message}` });
   if (err?.type === 'entity.too.large') return res.status(413).json({ error: `Body larger than ${BODY_LIMIT}` });
@@ -665,11 +741,6 @@ app.use((err, _req, res, _next) => {
   res.status(status).json({ error: message || 'Internal error', ...rest });
 });
 
-/**
- * Optional demo data for hosts with temporary storage (Vercel, Render free):
- *   SEED_APIS="agreement@v1=samples/agreement.json;order@v2=samples/order.json"
- * Each API is registered and seeded from the file (path relative to the project root) if it doesn't exist yet.
- */
 async function seedFromEnv() {
   const spec = process.env.SEED_APIS;
   if (!spec) return;
@@ -694,7 +765,6 @@ async function seedFromEnv() {
   }
 }
 
-// `ready` resolves once the registry is loaded (serverless hosts await it per request)
 const ready = store.init().then(async () => {
   if (store.remote.enabled) {
     const n = await store.pull();
@@ -705,9 +775,19 @@ const ready = store.init().then(async () => {
 });
 
 if (require.main === module) {
-  ready.then(() => {
-    app.listen(PORT, () => console.log(`Mock API server listening on http://localhost:${PORT}`));
-  });
+  ready.then(
+    () => app.listen(PORT, () => console.log(`Mock API server listening on http://localhost:${PORT}`)),
+    (e) => {
+      console.error(`Startup failed: ${e.message}`);
+      if (e.code === 'EACCES') {
+        console.error(
+          `The data folder ${store.DATA_DIR} is not writable for this user (uid ${process.getuid?.()}, gid ${process.getgid?.()}). ` +
+            'On OpenShift: make the volume group-writable (fsGroup) or run e.g. `chmod -R g+rwX` on it from a debug pod.'
+        );
+      }
+      process.exit(1);
+    }
+  );
 }
 
 module.exports = { app, ready };

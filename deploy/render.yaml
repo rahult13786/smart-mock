@@ -1,11 +1,8 @@
-# Render Blueprint – one web service runs the API and serves the portal.
-# Dashboard → New → Blueprint → pick this repository → Blueprint file path: deploy/render.yaml
-# (kept out of the repository root so Vercel does not pick it up when importing the project)
 services:
   - type: web
     name: mock-api-portal
     runtime: node
-    plan: free                      # free: sleeps after 15 min idle, files are lost on restart/redeploy
+    plan: free
     buildCommand: npm run install:all && npm run build
     startCommand: npm start
     healthCheckPath: /health
@@ -13,17 +10,9 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
-      # demo data: registered on start when it doesn't exist yet; remove if not wanted
       - key: SEED_APIS
         value: agreement@v1=samples/agreement.json
-      # keep data on the free plan: Upstash Redis (free) – values are entered in the dashboard
       - key: UPSTASH_REDIS_REST_URL
         sync: false
       - key: UPSTASH_REDIS_REST_TOKEN
         sync: false
-    # --- Keep data across restarts (paid plan only): uncomment and change plan to "starter" ---
-    # disk:
-    #   name: mock-data
-    #   mountPath: /var/data
-    #   sizeGB: 1
-    # and add the env var  DATA_DIR=/var/data

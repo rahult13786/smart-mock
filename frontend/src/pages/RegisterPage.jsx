@@ -5,10 +5,12 @@ import { useApis } from '../App.jsx';
 import { nextVersion } from '../util/value.js';
 import EnumModal from '../components/EnumModal.jsx';
 import MockModal from '../components/MockModal.jsx';
+import RegexModal, { RegexIcon } from '../components/RegexModal.jsx';
+import MapModal, { MapIcon } from '../components/MapModal.jsx';
 
-const isIdPath = (p) => /^id$/i.test(String(p).split('.').pop()); // id tags are always unique (locked)
+const isIdPath = (p) => /^id$/i.test(String(p).split('.').pop());
+const createOf = (t) => (t.create === undefined ? t.path === 'id' : !!t.create);
 
-/** Enum cell: shows the allowed values (if any) and opens the editor. */
 function EnumCell({ tag, onEdit }) {
   const vals = tag.enum || [];
   return (
@@ -33,13 +35,11 @@ export default function RegisterPage() {
   const [version, setVersion] = useState('v1');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [versionOf, setVersionOf] = useState(null); // api we are creating a new version of
-  const [prefill, setPrefill] = useState(null); // {key, from, note}
+  const [versionOf, setVersionOf] = useState(null);
+  const [prefill, setPrefill] = useState(null);
 
   const select = (key) => setParams(key ? { api: key } : {});
 
-  // the API itself can change the configuration (e.g. a GET filter makes a field searchable),
-  // so re-read it when the page opens and whenever the browser tab gets focus again
   useEffect(() => {
     refresh();
     const onFocus = () => document.visibilityState === 'visible' && refresh();
@@ -160,15 +160,16 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
   const [removed, setRemoved] = useState([]);
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [newTag, setNewTag] = useState(null); // {path, type, searchable} while the [+] row is open
-  const [tagError, setTagError] = useState(null); // {reason, suggestions, hint, path}
+  const [newTag, setNewTag] = useState(null);
+  const [tagError, setTagError] = useState(null);
   const [paths, setPaths] = useState([]);
   const [tagsOpen, setTagsOpen] = useState(false);
-  const [mocking, setMocking] = useState(false); // Tags section starts collapsed, like Endpoints
-  const [enumEdit, setEnumEdit] = useState(null); // 'new' or index of the tag whose enum is edited
+  const [mocking, setMocking] = useState(false);
+  const [enumEdit, setEnumEdit] = useState(null);
+  const [regexEdit, setRegexEdit] = useState(null);
+  const [mapEdit, setMapEdit] = useState(null);
   const sampleRef = useRef(null);
 
-  // take the server's tags unless the user has unsaved changes in the table
   const syncedTags = useRef(api.tags);
   const tagsRef = useRef(tags);
   tagsRef.current = tags;
@@ -182,7 +183,6 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
   }, [api.tags]);
   useEffect(() => setEditingSample(!api.hasSample), [api.hasSample]);
 
-  // New version: copy the previous version's sample into the editor
   useEffect(() => {
     if (!open || !prefill) return;
     admin
@@ -196,7 +196,6 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
       .finally(onPrefillUsed);
   }, [open, prefill, onPrefillUsed]);
 
-  // value paths of the sample, for the path suggestions of the [+] row
   useEffect(() => {
     if (open && api.hasSample) admin.paths(api._id).then(setPaths).catch(() => setPaths([]));
   }, [open, api._id, api.hasSample, api.updatedAt]);
@@ -228,7 +227,7 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
       const r = await admin.validateTags(api._id, [{ path, type: newTag.type }]);
       if (!r.valid) return showTagError(r, path);
       const norm = r.results[0].path;
-      setTags([...tags, { path: norm, level: norm.split('.').length, type: newTag.type, searchable: newTag.searchable, custom: true, isNew: true, ...(newTag.unique || isIdPath(norm) ? { unique: true } : {}), ...(newTag.enum?.length ? { enum: newTag.enum } : {}) }]);
+      setTags([...tags, { path: norm, level: norm.split('.').length, type: newTag.type, searchable: newTag.searchable, custom: true, isNew: true, ...(newTag.unique || norm === 'id' ? { unique: true } : {}), ...(newTag.enum?.length ? { enum: newTag.enum } : {}), ...(newTag.must ? { must: true } : {}), create: !!newTag.create }]);
       setRemoved(removed.filter((p) => p !== norm));
       setNewTag(null);
     } catch (e) {
@@ -244,14 +243,24 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
   async function saveTags() {
     setTagError(null);
     const payload = [
-      ...tags.map(({ path, type, searchable, unique, custom, enum: values }) => ({ path, type, searchable, unique: !!unique, custom, enum: values || [] })),
+      ...tags.map(({ path, type, searchable, unique, custom, enum: values, must, create, regex, map }) => ({
+        path,
+        type,
+        searchable,
+        unique: !!unique,
+        custom,
+        enum: values || [],
+        must: !!must,
+        create: create === undefined ? path === 'id' : !!create,
+        ...(isIdPath(path) ? { regex: regex || null } : { map: map || null }),
+      })),
       ...removed.map((path) => ({ path, remove: true })),
     ];
     setBusy(true);
     setMsg(null);
     try {
       const r = await admin.saveTags(api._id, payload);
-      syncedTags.current = tags; // so the refreshed server tags replace the table
+      syncedTags.current = tags;
       const warn = [
         ...(r.enumWarnings || []).map(
           (w) => `${w.count} stored value${w.count === 1 ? '' : 's'} of "${w.path}" ${w.count === 1 ? 'is' : 'are'} not in its allowed values (e.g. ${w.values.join(', ')})`
@@ -272,6 +281,20 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
     } finally {
       setBusy(false);
     }
+  }
+
+  async function saveConfig(index, key, value) {
+    const t = tags[index];
+    const apply = (list) => list.map((x) => (x.path === t.path ? { ...x, [key]: value } : x));
+    if (!t.isNew) {
+      await admin.saveTags(api._id, [{ path: t.path, [key]: value }]);
+      syncedTags.current = apply(syncedTags.current);
+    }
+    setTags(apply(tags));
+    const label = key === 'regex' ? 'Regex' : 'Map';
+    const detail = key === 'map' && value.enabled ? ` (from ${value.source})` : '';
+    setMsg({ type: 'ok', text: `${label} of "${t.path}" ${value.enabled ? 'enabled' : 'disabled'}${detail}${t.isNew ? ' – save the tags to keep it' : ' and saved'}.` });
+    if (!t.isNew) await onChanged();
   }
 
   function openSampleEditor() {
@@ -307,7 +330,8 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
       setEditingSample(false);
       setSampleText('');
       setTagsOpen(true);
-      return `Sample saved – ${r.seeded} record(s) seeded, ${r.tags.length} tags found. Choose which tags are searchable below.`;
+      const ids = r.tags.filter((t) => isIdPath(t.path)).length;
+      return `Sample saved – ${r.seeded} record(s) seeded, ${ids} id tag${ids === 1 ? '' : 's'} stored. Use + Add tag for any other field you want to configure.`;
     }, 'Sample saved');
   }
 
@@ -423,8 +447,11 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
                   <span className="count">{tags.length}</span>
                   {tags.some((t) => t.unique) && <span className="count on">{tags.filter((t) => t.unique).length} unique</span>}
                   {tags.some((t) => t.enum?.length) && <span className="count on">{tags.filter((t) => t.enum?.length).length} enum</span>}
+                  {tags.some((t) => t.must) && <span className="count on">{tags.filter((t) => t.must).length} must</span>}
+                  {tags.some((t) => t.regex?.enabled) && <span className="count on">{tags.filter((t) => t.regex?.enabled).length} regex</span>}
+                  {tags.some((t) => t.map?.enabled) && <span className="count on">{tags.filter((t) => t.map?.enabled).length} map</span>}
                 </button>
-                {tagsOpen && <span className="muted small">1st and 2nd level paths (arrays excluded) + your own paths</span>}
+                {tagsOpen && <span className="muted small">id paths of the sample + the paths you add</span>}
                 <span className="spacer" />
                 <button
                   className="btn"
@@ -433,7 +460,7 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
                   onClick={() => {
                     setTagError(null);
                     setTagsOpen(true);
-                    setNewTag({ path: '', type: 'string', searchable: true, unique: false });
+                    setNewTag({ path: '', type: 'string', searchable: true, unique: false, must: false, create: false });
                   }}
                 >
                   + Add tag
@@ -494,7 +521,10 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
                     <th>Type</th>
                     <th className="center" title="Key of list items: lets PATCH paths address an item by this value">Unique</th>
                     <th className="center">Searchable</th>
+                    <th className="center" title="POST / PATCH op add: id fields get a new value; other fields get a value when it is missing (enum: one of the allowed values)">Create (post)</th>
+                    <th className="center" title="Required on POST / PATCH op add">Must</th>
                     <th className="center" title="Allowed values">Enum</th>
+                    <th className="center" title="Id fields: generate values from a regex · other fields (without enum): copy the value of a parent or sibling field">Regex / Map</th>
                     <th />
                   </tr>
                 </thead>
@@ -528,9 +558,9 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
                       <td className="center">
                         <input
                           type="checkbox"
-                          title={isIdPath(newTag.path) ? 'Id fields are always unique' : 'Unique key of the list items'}
-                          checked={!!newTag.unique || isIdPath(newTag.path)}
-                          disabled={isIdPath(newTag.path)}
+                          title={newTag.path.trim() === 'id' ? 'The record id is always unique' : 'Unique key of the list items'}
+                          checked={!!newTag.unique || newTag.path.trim() === 'id'}
+                          disabled={newTag.path.trim() === 'id'}
                           onChange={(e) => setNewTag({ ...newTag, unique: e.target.checked })}
                         />
                       </td>
@@ -542,8 +572,15 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
                         />
                       </td>
                       <td className="center">
+                        <input type="checkbox" checked={!!newTag.create} onChange={(e) => setNewTag({ ...newTag, create: e.target.checked })} />
+                      </td>
+                      <td className="center">
+                        <input type="checkbox" checked={!!newTag.must} onChange={(e) => setNewTag({ ...newTag, must: e.target.checked })} />
+                      </td>
+                      <td className="center">
                         <EnumCell tag={newTag} onEdit={() => newTag.path.trim() && setEnumEdit('new')} />
                       </td>
+                      <td className="center muted">–</td>
                       <td className="nowrap">
                         <button className="btn small primary" onClick={addTag} disabled={!newTag.path.trim()}>Add</button>{' '}
                         <button className="btn small ghost" onClick={() => { setNewTag(null); setTagError(null); }}>Cancel</button>
@@ -561,9 +598,9 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
                       <td className="center">
                         <input
                           type="checkbox"
-                          title={isIdPath(t.path) ? 'Id fields are always unique' : 'Unique key of the list items'}
-                          checked={!!t.unique || isIdPath(t.path)}
-                          disabled={isIdPath(t.path)}
+                          title={t.path === 'id' ? 'The record id is always unique' : 'Unique key of the list items'}
+                          checked={!!t.unique || t.path === 'id'}
+                          disabled={t.path === 'id'}
                           onChange={(e) => setTags(tags.map((x, j) => (j === i ? { ...x, unique: e.target.checked } : x)))}
                         />
                       </td>
@@ -577,7 +614,32 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
                         />
                       </td>
                       <td className="center">
+                        <input
+                          type="checkbox"
+                          title={isIdPath(t.path) ? 'Generate a new id on POST / PATCH op add' : 'Fill this field when it is missing on POST / PATCH op add'}
+                          checked={createOf(t)}
+                          onChange={(e) => setTags(tags.map((x, j) => (j === i ? { ...x, create: e.target.checked } : x)))}
+                        />
+                      </td>
+                      <td className="center">
+                        <input
+                          type="checkbox"
+                          title="Required on POST / PATCH op add"
+                          checked={!!t.must}
+                          onChange={(e) => setTags(tags.map((x, j) => (j === i ? { ...x, must: e.target.checked } : x)))}
+                        />
+                      </td>
+                      <td className="center">
                         <EnumCell tag={t} onEdit={() => setEnumEdit(i)} />
+                      </td>
+                      <td className="center">
+                        {isIdPath(t.path) ? (
+                          <RegexIcon tag={t} onOpen={() => setRegexEdit(i)} />
+                        ) : t.enum?.length ? (
+                          <span className="muted" title="Fields with allowed values (enum) cannot be mapped">–</span>
+                        ) : (
+                          <MapIcon tag={t} onOpen={() => setMapEdit(i)} />
+                        )}
                       </td>
                       <td className="center">
                         {t.custom && (
@@ -596,8 +658,24 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
                   onClose={() => setEnumEdit(null)}
                   onSave={(values) => {
                     if (enumEdit === 'new') setNewTag({ ...newTag, enum: values });
-                    else setTags(tags.map((x, j) => (j === enumEdit ? { ...x, enum: values.length ? values : undefined } : x)));
+                    else setTags(tags.map((x, j) => (j === enumEdit ? { ...x, enum: values.length ? values : undefined, ...(values.length ? { map: undefined } : {}) } : x)));
                   }}
+                />
+              )}
+              {regexEdit !== null && tags[regexEdit] && (
+                <RegexModal
+                  apiKey={api._id}
+                  tag={tags[regexEdit]}
+                  onClose={() => setRegexEdit(null)}
+                  onSave={(regex) => saveConfig(regexEdit, 'regex', regex)}
+                />
+              )}
+              {mapEdit !== null && tags[mapEdit] && (
+                <MapModal
+                  apiKey={api._id}
+                  tag={tags[mapEdit]}
+                  onClose={() => setMapEdit(null)}
+                  onSave={(map) => saveConfig(mapEdit, 'map', map)}
                 />
               )}
                 </>

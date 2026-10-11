@@ -1,4 +1,3 @@
-// Thin fetch wrapper for the admin + mock data endpoints.
 async function request(method, url, body, contentType = 'application/json') {
   const res = await fetch(url, {
     method,
@@ -33,10 +32,28 @@ export const admin = {
   saveTags: (key, tags) => request('PUT', `/admin/apis/${enc(key)}/tags`, { tags }),
   validateTags: (key, tags) => request('POST', `/admin/apis/${enc(key)}/tags/validate`, { tags }),
   paths: (key) => request('GET', `/admin/apis/${enc(key)}/paths`),
+  mapCandidates: (key, path) => request('GET', `/admin/apis/${enc(key)}/tags/map?path=${enc(path)}`),
+  regex: (key, path, pattern) =>
+    request('GET', `/admin/apis/${enc(key)}/tags/regex?path=${enc(path)}${pattern !== undefined ? `&pattern=${enc(pattern)}` : ''}`),
   values: (key, path) => request('GET', `/admin/apis/${enc(key)}/values?path=${enc(path)}`),
   mockPlan: (key, source) => request('GET', `/admin/apis/${enc(key)}/mocks/plan?source=${enc(source)}`),
   createMocks: (key, spec) => request('POST', `/admin/apis/${enc(key)}/mocks`, spec),
   remove: (key) => request('DELETE', `/admin/apis/${enc(key)}`),
+};
+
+export const accounts = {
+  users: () => request('GET', '/admin/users'),
+  newPassword: () => request('GET', '/admin/users/password'),
+  password: (id) => request('GET', `/admin/users/${enc(id)}/password`),
+  createUser: (user) => request('POST', '/admin/users', user),
+  updateUser: (id, user) => request('PATCH', `/admin/users/${enc(id)}`, user),
+  removeUser: (id) => request('DELETE', `/admin/users/${enc(id)}`),
+  folderOptions: () => request('GET', '/admin/folders/options'),
+  folders: () => request('GET', '/admin/folders'),
+  folder: (id) => request('GET', `/admin/folders/${enc(id)}`),
+  createFolder: (folder) => request('POST', '/admin/folders', folder),
+  setFolderUsers: (id, userIds) => request('PUT', `/admin/folders/${enc(id)}/users`, { userIds }),
+  removeFolder: (id) => request('DELETE', `/admin/folders/${enc(id)}`),
 };
 
 export const data = (basePath) => ({
@@ -46,9 +63,9 @@ export const data = (basePath) => ({
     return request('GET', `${basePath}?${qs}`);
   },
   get: (id) => request('GET', `${basePath}/${enc(id)}`),
-  create: (record) => request('POST', basePath, record),
+  create: (record, { copy = false } = {}) => request('POST', copy ? `${basePath}?generate=false` : basePath, record),
   remove: (id) => request('DELETE', `${basePath}/${enc(id)}`),
-  // the portal always sends exact index paths, so id / unique-key lookup is turned off (?pathMode=index)
-  jsonPatch: (id, ops) => request('PATCH', `${basePath}/${enc(id)}?pathMode=index`, ops, 'application/json-patch+json'),
+  jsonPatch: (id, ops, { copy = false } = {}) =>
+    request('PATCH', `${basePath}/${enc(id)}?pathMode=index${copy ? '&generate=false' : ''}`, ops, 'application/json-patch+json'),
   mergePatch: (id, patch) => request('PATCH', `${basePath}/${enc(id)}?pathMode=index`, patch, 'application/merge-patch+json'),
 });

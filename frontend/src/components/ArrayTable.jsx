@@ -5,22 +5,14 @@ import { useEditor } from './editor.js';
 import Pager from './Pager.jsx';
 import AddItemModal from './AddItemModal.jsx';
 
-/**
- * Renders a list (array) as a table.
- *  - columns = union of keys of the items
- *  - scalar cells are editable inline
- *  - object / array cells are links that open the key/value popup (and propagate further)
- *  - array of scalars -> single "value" column
- * `rowPath(i)` returns the JSON path of row i (defaults to [...path, i]).
- */
 export default function ArrayTable({ path, rows, rowPath, pageSize = 15 }) {
   const { setAt, open, addItems, copyItem, confirmRemove } = useEditor();
   const [page, setPage] = useState(0);
   const [filter, setFilter] = useState('');
   const [adding, setAdding] = useState(false);
-  const [added, setAdded] = useState(null); // [from, to) rows added / copied in this view – highlighted
+  const [added, setAdded] = useState(null);
   const pathOf = rowPath || ((i) => [...path, i]);
-  const canAdd = !rowPath && !!addItems; // only real lists (not a root object shown as a row)
+  const canAdd = !rowPath && !!addItems;
 
   const scalarRows = rows.length > 0 && rows.every((r) => !isObj(r));
   const canCopy = canAdd && !!copyItem && !scalarRows;
@@ -31,7 +23,7 @@ export default function ArrayTable({ path, rows, rowPath, pageSize = 15 }) {
     copyItem(pathOf(i), (index) => {
       setFilter('');
       setAdded([index, index + 1]);
-      setPage(Math.floor(index / pageSize)); // show the page holding the copy
+      setPage(Math.floor(index / pageSize));
     });
   const columns = useMemo(() => (scalarRows ? ['value'] : columnsOf(rows)), [rows, scalarRows]);
 
@@ -64,7 +56,7 @@ export default function ArrayTable({ path, rows, rowPath, pageSize = 15 }) {
         await addItems(path, items);
         setFilter('');
         setAdded([start, start + items.length]);
-        setPage(Number.MAX_SAFE_INTEGER); // jump to the last page, where the new rows are
+        setPage(Number.MAX_SAFE_INTEGER);
       }}
     />
   );

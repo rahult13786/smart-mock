@@ -4,11 +4,10 @@ import { useEditor } from './editor.js';
 
 const label = (path) => path.map((p) => (typeof p === 'number' ? `[${p}]` : humanize(p))).join(' › ');
 
-/** Turn the text typed for a field into a JSON value, based on the type used by existing items. */
 function parseField(text, field) {
   const t = text.trim();
   if (t === '') return undefined;
-  if (field.kind !== 'scalar') return JSON.parse(t); // object / array fields take JSON
+  if (field.kind !== 'scalar') return JSON.parse(t);
   if (field.types.length === 1 && field.types[0] === 'number') {
     const n = Number(t);
     if (Number.isNaN(n)) throw new Error(`"${field.key}" must be a number`);
@@ -18,11 +17,6 @@ function parseField(text, field) {
   return text;
 }
 
-/**
- * Add one (or, in JSON mode, several) items to a list.
- * Two ways – only one is used per save: a form generated from the existing items, or pasted JSON.
- * Before saving, the item must contain at least one of the keys all existing items share.
- */
 export default function AddItemModal({ path, rows, onClose, onSave }) {
   const shape = useMemo(() => listShape(rows), [rows]);
   const { enumFor } = useEditor();
@@ -31,7 +25,7 @@ export default function AddItemModal({ path, rows, onClose, onSave }) {
   const [values, setValues] = useState(() =>
     Object.fromEntries(shape.fields.map((f) => [f.key, f.constant !== undefined ? String(f.constant) : '']))
   );
-  const [extra, setExtra] = useState([]); // [{key, value}] new fields added in the form
+  const [extra, setExtra] = useState([]);
   const [scalar, setScalar] = useState('');
   const [json, setJson] = useState(() => {
     if (shape.kind === 'scalar') return '""';
@@ -39,14 +33,13 @@ export default function AddItemModal({ path, rows, onClose, onSave }) {
     const tpl = Object.fromEntries(shape.fields.map((f) => [f.key, f.constant ?? (f.kind === 'array' ? [] : f.kind === 'object' ? {} : '')]));
     return JSON.stringify(tpl, null, 2);
   });
-  const [problems, setProblems] = useState(null); // {errors, warnings, newKeys}
+  const [problems, setProblems] = useState(null);
   const [saving, setSaving] = useState(false);
   const [confirmWarnings, setConfirmWarnings] = useState(false);
 
   function buildItems() {
     if (mode === 'json') {
       const parsed = JSON.parse(json);
-      // an array pasted into a list of objects = several items
       return Array.isArray(parsed) && shape.kind !== 'scalar' ? parsed : [parsed];
     }
     if (shape.kind === 'scalar') {
@@ -94,7 +87,7 @@ export default function AddItemModal({ path, rows, onClose, onSave }) {
     setProblems(result);
     if (result.errors.length) return;
     if ((result.warnings.length || result.newKeys.length) && !confirmWarnings) {
-      setConfirmWarnings(true); // show warnings once, second click saves
+      setConfirmWarnings(true);
       return;
     }
     setSaving(true);

@@ -1,5 +1,3 @@
-// End-to-end smoke test: starts the server on a temp data dir and exercises every endpoint.
-// Usage: npm test   (optionally SAMPLE=../samples/agreement.json)
 const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -54,13 +52,17 @@ const step = async (name, fn) => {
       assert.equal((await req('POST', '/admin/apis', { name: 'agreement', version: 'v1' })).status, 409);
     });
 
-    await step('save sample -> tags + seeded record', async () => {
+    await step('save sample -> only id tags + seeded record', async () => {
       const r = await req('PUT', '/admin/apis/agreement__v1/sample', { sample });
       assert.equal(r.status, 200, JSON.stringify(r.json));
       assert.equal(r.json.seeded, 1);
       const paths = r.json.tags.map((t) => t.path);
-      assert.ok(paths.includes('id') && paths.includes('agreementPeriod.startDateTime'));
-      assert.ok(!paths.some((p) => p.startsWith('agreementItem')), 'arrays excluded');
+      assert.ok(paths.every((p) => /(^|\.)id$/i.test(p)), paths.join());
+      assert.ok(paths.includes('id') && paths.includes('agreementItem.productOfferingPrice.id'));
+      const root = r.json.tags.find((t) => t.path === 'id');
+      assert.equal(root.create, true);
+      assert.equal(root.searchable, true);
+      assert.equal(r.json.tags.find((t) => t.path === 'agreementItem.id').create, false);
     });
 
     await step('GET collection / summary / by id', async () => {
@@ -75,17 +77,26 @@ const step = async (name, fn) => {
       assert.equal((await req('GET', '/api/agreement/v1/nope')).status, 404);
     });
 
-    await step('POST new record (generated id) + duplicate 409', async () => {
-      const r = await req('POST', '/api/agreement/v1', { name: 'Second', status: 'Draft', '@type': 'Agreement' });
-      assert.equal(r.status, 201);
-      assert.ok(r.json.id);
+    await step('POST: root id regenerated (create checked), kept for copies, duplicate 409', async () => {
+      const r = await req('POST', '/api/agreement/v1', { id: 'GIVEN-1', name: 'Second', status: 'Draft', '@type': 'Agreement' });
+      assert.equal(r.status, 201, JSON.stringify(r.json));
+      assert.notEqual(r.json.id, 'GIVEN-1');
+      assert.match(r.json.id, /^MSA-\d{6}-\d{6}$/);
+      const copy = await req('POST', '/api/agreement/v1?generate=false', { id: 'COPY-1', name: 'Copy' });
+      assert.equal(copy.json.id, 'COPY-1');
+      await req('DELETE', '/api/agreement/v1/COPY-1');
+      const off = await req('PUT', '/admin/apis/agreement__v1/tags', { tags: [{ path: 'id', create: false }] });
+      assert.equal(off.json.tags.find((t) => t.path === 'id').create, false);
+      const kept = await req('POST', '/api/agreement/v1', { id: 'GIVEN-2', name: 'Kept' });
+      assert.equal(kept.json.id, 'GIVEN-2');
+      await req('DELETE', '/api/agreement/v1/GIVEN-2');
       assert.equal((await req('POST', '/api/agreement/v1', { id })).status, 409);
     });
 
     await step('search on searchable tags', async () => {
       const r = await req('GET', '/api/agreement/v1?view=summary&name=second');
       assert.equal(r.json.total, 1);
-      assert.equal((await req('GET', '/api/agreement/v1?view=summary&q=draft')).json.total, 1);
+      assert.equal((await req('GET', '/api/agreement/v1?view=summary&q=second')).json.total, 1);
       const bad = await req('GET', '/api/agreement/v1?doesNotExist=x');
       assert.equal(bad.status, 400);
       assert.equal(bad.json.code, 'FILTER_PATH_NOT_FOUND');
@@ -113,19 +124,16 @@ const step = async (name, fn) => {
     });
 
     await step('filter on a non-searchable / unconfigured path updates the configuration', async () => {
-      // agreementType is a tag but not searchable -> switched on
       const r = await req('GET', '/api/agreement/v1?agreementType.like=physical&status.like=awaiting,draft');
       assert.equal(r.status, 200, JSON.stringify(r.json));
       assert.equal(r.json.length, 1);
       assert.match(r.headers.get('x-search-config-updated'), /agreementType/);
-      // deep path through arrays, not configured at all -> added as custom tag
       const r2 = await req('GET', '/api/agreement/v1?view=summary&characteristic.name.like=contract');
       assert.equal(r2.status, 200, JSON.stringify(r2.json));
       assert.equal(r2.json.total, 1);
       const api = (await req('GET', '/admin/apis/agreement__v1')).json;
       const t = api.tags.find((x) => x.path === 'characteristic.name');
       assert.ok(t && t.searchable && t.custom);
-      // second call: no config change
       const r3 = await req('GET', '/api/agreement/v1?agreementType.like=physical');
       assert.equal(r3.headers.get('x-search-config-updated'), null);
     });
@@ -195,25 +203,21 @@ const step = async (name, fn) => {
       });
       assert.equal(r.status, 200, JSON.stringify(r.json));
       assert.deepEqual(r.json.tags.find((t) => t.path === 'agreementType').enum, ['Standard Physical', 'Standard Digital']);
-      assert.ok(r.json.enumWarnings.some((w) => w.path === 'characteristic.name' && w.count > 0)); // existing data outside enum
+      assert.ok(r.json.enumWarnings.some((w) => w.path === 'characteristic.name' && w.count > 0));
       const vals = await req('GET', '/admin/apis/agreement__v1/values?path=characteristic.name');
       assert.ok(vals.json.length > 5);
-      // POST with a wrong value
       const p1 = await req('POST', '/api/agreement/v1', { id: 'enum-1', agreementType: 'Wrong' });
       assert.equal(p1.status, 422);
       assert.equal(p1.json.code, 'ENUM_VIOLATION');
       assert.match(p1.json.error, /Wrong data sent on path "\/agreementType"/);
       assert.equal((await req('POST', '/api/agreement/v1', { id: 'enum-2', agreementType: 'Standard Digital' })).status, 201);
-      // PATCH: wrong value at nested list path -> 422 with the concrete path
       const p2 = await req('PATCH', `/api/agreement/v1/${id}`, [{ op: 'replace', path: '/characteristic/0/name', value: 'Bogus' }], { 'content-type': 'application/json-patch+json' });
       assert.equal(p2.status, 422);
       assert.equal(p2.json.violations[0].path, '/characteristic/0/name');
-      // PATCH of an unrelated field passes although stored data has old values outside the enum
       const p3 = await req('PATCH', `/api/agreement/v1/${id}`, { description: 'enum ok' }, { 'content-type': 'application/merge-patch+json' });
       assert.equal(p3.status, 200, JSON.stringify(p3.json));
       const p4 = await req('PATCH', `/api/agreement/v1/${id}`, { agreementType: 'Standard Digital' });
       assert.equal(p4.status, 200);
-      // enum survives a sample re-save; [] removes it
       const again = await req('PUT', '/admin/apis/agreement__v1/sample', { sample, seed: false });
       assert.ok(again.json.tags.find((t) => t.path === 'agreementType').enum);
       const rm = await req('PUT', '/admin/apis/agreement__v1/tags', { tags: [{ path: 'agreementType', enum: [] }, { path: 'characteristic.name', enum: null }] });
@@ -226,7 +230,6 @@ const step = async (name, fn) => {
       assert.equal(d.status, 200);
       assert.equal((await req('GET', '/api/agreement/v1/enum-3')).status, 404);
       assert.equal((await req('DELETE', '/api/agreement/v1/enum-3')).status, 404);
-      // removing a node is a JSON Patch "remove"
       const before = (await req('GET', `/api/agreement/v1/${id}`)).json.engagedParty.length;
       const r = await req('PATCH', `/api/agreement/v1/${id}`, [{ op: 'remove', path: '/engagedParty/0' }], { 'content-type': 'application/json-patch+json' });
       assert.equal(r.json.engagedParty.length, before - 1);
@@ -248,7 +251,7 @@ const step = async (name, fn) => {
       const t = ok.json.tags.find((x) => x.path === 'characteristic.name');
       assert.equal(t.unique, true);
       assert.equal(t.uniqueIn, 'characteristic');
-      assert.ok(ok.json.uniqueWarnings.some((w) => w.path === 'characteristic.name')); // sample has duplicate names
+      assert.ok(ok.json.uniqueWarnings.some((w) => w.path === 'characteristic.name'));
     });
 
     await step('PATCH paths: id -> unique key -> index', async () => {
@@ -256,38 +259,29 @@ const step = async (name, fn) => {
       const itemId = rec.agreementItem[0].id;
       const popId = rec.agreementItem[0].productOfferingPrice[1].id;
       const jp = (ops, q = '') => req('PATCH', `/api/agreement/v1/${id}${q}`, ops, { 'content-type': 'application/json-patch+json' });
-      // id of agreementItem + index of productOfferingPrice
       let r = await jp([{ op: 'replace', path: `/agreementItem/${itemId}/productOfferingPrice/1/price/value`, value: 111 }]);
       assert.equal(r.status, 200, JSON.stringify(r.json));
       assert.equal(r.json.agreementItem[0].productOfferingPrice[1].price.value, 111);
       assert.match(r.headers.get('x-patch-resolved'), /\/agreementItem\/0\/productOfferingPrice\/1\/price\/value/);
-      // id at both levels
       r = await jp([{ op: 'replace', path: `/agreementItem/${itemId}/productOfferingPrice/${popId}/priceType`, value: 'ById' }]);
       assert.equal(r.json.agreementItem[0].productOfferingPrice[1].priceType, 'ById');
-      // unique key (characteristic has no id; name is unique)
       const ci = r.json.characteristic.findIndex((c) => c.name === 'Contract level');
       r = await jp([{ op: 'replace', path: '/characteristic/Contract level/value', value: 'Enterprise' }]);
       assert.equal(r.status, 200, JSON.stringify(r.json));
       assert.equal(r.json.characteristic[ci].value, 'Enterprise');
-      // nested unique key under an id
       r = await jp([{ op: 'replace', path: `/agreementItem/${itemId}/characteristic/Validity End Date/value`, value: 'x' }]);
       assert.equal(r.status, 200, JSON.stringify(r.json));
       assert.equal(r.json.agreementItem[0].characteristic.find((c) => c.name === 'Validity End Date').value, 'x');
-      // ambiguous unique key (duplicate names in data) -> 409
       const dupName = (() => { const seen = new Set(); for (const c of r.json.characteristic) { if (seen.has(c.name)) return c.name; seen.add(c.name); } })();
       if (dupName) assert.equal((await jp([{ op: 'replace', path: `/characteristic/${dupName}/value`, value: 'y' }])).status, 409);
-      // unknown -> 422
       const nf = await jp([{ op: 'replace', path: '/agreementItem/NOPE/name', value: 1 }]);
       assert.equal(nf.status, 422);
       assert.equal(nf.json.code, 'ITEM_NOT_FOUND');
-      // remove by id
       const before = r.json.agreementItem[0].productOfferingPrice.length;
       r = await jp([{ op: 'remove', path: `/agreementItem/${itemId}/productOfferingPrice/${popId}` }]);
       assert.equal(r.json.agreementItem[0].productOfferingPrice.length, before - 1);
       assert.notEqual(r.json.agreementItem[0].productOfferingPrice[1].id, popId);
-      // pathMode=index: id lookup off
       assert.equal((await jp([{ op: 'replace', path: `/agreementItem/${itemId}/name`, value: 1 }], '?pathMode=index')).status, 422);
-      // merge patch with ids / unique keys inside lists
       const m = await req('PATCH', `/api/agreement/v1/${id}`, {
         agreementItem: { [itemId]: { productOfferingPrice: { 0: { priceType: 'Merged' } } } },
         characteristic: { 'Contract level': { value: 'Merged value' } },
@@ -298,49 +292,49 @@ const step = async (name, fn) => {
       assert.ok(Array.isArray(m.json.agreementItem));
     });
 
-    await step('id tags are always unique', async () => {
+    await step('root id always unique; nested ids unique only when chosen', async () => {
       const api = (await req('GET', '/admin/apis/agreement__v1')).json;
       assert.equal(api.tags.find((t) => t.path === 'id').unique, true);
-      assert.equal(api.tags.find((t) => t.path === 'agreementSpecification.id').unique, true);
-      const r = await req('PUT', '/admin/apis/agreement__v1/tags', { tags: [{ path: 'id', unique: false }] });
+      assert.ok(!api.tags.find((t) => t.path === 'agreementSpecification.id').unique);
+      assert.ok(!api.tags.find((t) => t.path === 'agreementItem.productOfferingPrice.id').unique);
+      const r = await req('PUT', '/admin/apis/agreement__v1/tags', { tags: [{ path: 'id', unique: false }, { path: 'agreementItem.productOfferingPrice.id', unique: true }] });
       assert.equal(r.status, 200, JSON.stringify(r.json));
-      assert.equal(r.json.tags.find((t) => t.path === 'id').unique, true); // cannot be unchecked
+      assert.equal(r.json.tags.find((t) => t.path === 'id').unique, true);
+      const pop = r.json.tags.find((t) => t.path === 'agreementItem.productOfferingPrice.id');
+      assert.equal(pop.unique, true);
+      assert.equal(pop.uniqueIn, 'agreementItem.productOfferingPrice');
+      const off = await req('PUT', '/admin/apis/agreement__v1/tags', { tags: [{ path: 'agreementItem.productOfferingPrice.id', unique: false }] });
+      assert.ok(!off.json.tags.find((t) => t.path === 'agreementItem.productOfferingPrice.id').unique);
     });
 
     await step('TMF630 GET: filter (equality / like / ne), fields, sort, offset, limit', async () => {
       await req('PATCH', `/api/agreement/v1/${id}`, { status: 'Awaiting approval' });
-      // config is updated for every new filter param (Fix 1)
       const f = await req('GET', '/api/agreement/v1?status=Awaiting approval&version=1');
       assert.equal(f.json.length, 1);
       assert.equal(f.status, 200);
       const cfg = (await req('GET', '/admin/apis/agreement__v1')).json;
       assert.equal(cfg.tags.find((t) => t.path === 'version').searchable, true);
       assert.equal(cfg.tags.find((t) => t.path === 'status').searchable, true);
-      // equality is exact (case-insensitive); like = contains
       assert.equal((await req('GET', '/api/agreement/v1?status=awaiting')).json.length, 0);
       assert.equal((await req('GET', '/api/agreement/v1?status=AWAITING APPROVAL')).json.length, 1);
       assert.equal((await req('GET', '/api/agreement/v1?status.like=await')).json.length, 1);
       assert.ok((await req('GET', '/api/agreement/v1?status.ne=Awaiting approval')).json.every((x) => x.status !== 'Awaiting approval'));
-      // fields only
       const fo = await req('GET', '/api/agreement/v1?fields=name,description');
       assert.deepEqual(Object.keys(fo.json[0]).sort(), ['description', 'id', 'name'].filter((k) => k in fo.json[0]).sort());
       assert.ok(!('agreementItem' in fo.json[0]));
-      // filter + fields + nested list fields
       const ff = await req('GET', `/api/agreement/v1?id=${id}&fields=id,name,agreementItem.id,agreementItem.productOfferingPrice.id,characteristic`);
       const one = ff.json[0];
       assert.deepEqual(Object.keys(one).sort(), ['agreementItem', 'characteristic', 'id', 'name']);
       assert.deepEqual(Object.keys(one.agreementItem[0]).sort(), ['id', 'productOfferingPrice']);
       assert.deepEqual(Object.keys(one.agreementItem[0].productOfferingPrice[0]), ['id']);
-      assert.ok(one.characteristic[0].name); // whole value
-      // single record with fields
+      assert.ok(one.characteristic[0].name);
       const sf = await req('GET', `/api/agreement/v1/${id}?fields=status`);
       assert.deepEqual(Object.keys(sf.json).sort(), ['id', 'status']);
-      // sort + offset + limit
       await req('POST', '/api/agreement/v1', [{ id: 's-b', name: 'Bravo', version: '2' }, { id: 's-a', name: 'Alpha', version: '10' }, { id: 's-c', name: 'Charlie', version: '2' }]);
       const asc = await req('GET', '/api/agreement/v1?id=s-a,s-b,s-c&sort=name&fields=name');
       assert.deepEqual(asc.json.map((x) => x.name), ['Alpha', 'Bravo', 'Charlie']);
       const multi = await req('GET', '/api/agreement/v1?id=s-a,s-b,s-c&sort=-version,name&fields=name,version');
-      assert.deepEqual(multi.json.map((x) => x.id), ['s-a', 's-b', 's-c']); // 10 > 2 numerically, then name
+      assert.deepEqual(multi.json.map((x) => x.id), ['s-a', 's-b', 's-c']);
       const page = await req('GET', '/api/agreement/v1?id=s-a,s-b,s-c&sort=-name&offset=1&limit=1&fields=name');
       assert.deepEqual(page.json.map((x) => x.name), ['Bravo']);
       assert.equal(page.headers.get('x-total-count'), '3');
@@ -378,25 +372,22 @@ const step = async (name, fn) => {
       assert.deepEqual(r.json.created.slice(0, 2).map((c) => c.id), ['MOCK-1', 'MOCK-2']);
       const m1 = (await req('GET', '/api/agreement/v1/MOCK-1')).json;
       assert.equal(m1.status, 'Approved');
-      assert.equal(m1.stcAgreementBusinessId, 'MOCK-1'); // replace all
+      assert.equal(m1.stcAgreementBusinessId, 'MOCK-1');
       assert.notEqual(m1.agreementItem[0].id, sample[0].agreementItem[0].id);
       assert.equal(m1.characteristic.find((c) => c.name === 'Contract level').value, 'Gold');
       assert.equal(m1.characteristic.find((c) => c.name === 'Created Date').value, sample[0].characteristic.find((c) => c.name === 'Created Date').value);
       const m3 = (await req('GET', `/api/agreement/v1/${r.json.created[2].id}`)).json;
-      assert.match(m3.id, /^MSA-\d{6}-\d{6}$/); // generated like the sample
+      assert.match(m3.id, /^MSA-\d{6}-\d{6}$/);
       assert.notEqual(m3.characteristic.find((c) => c.name === 'Contract level').value, undefined);
-      // current value of a list field depends on the filter
       const all = (await req('GET', '/admin/apis/agreement__v1/mocks/current?source=sample:0&path=characteristic.value')).json;
       assert.ok(all.count > 10);
       const one = (await req('GET', '/admin/apis/agreement__v1/mocks/current?source=sample:0&path=characteristic.value&filterKey=name&filterValue=Contract%20level')).json;
       assert.deepEqual(one, { count: 1, values: ['Service'] });
-      // nested field of a list item (price.value inside productOfferingPrice) filtered by the item's id
       const popId = sample[0].agreementItem[0].productOfferingPrice[3].id;
       const nested = (await req('GET', `/admin/apis/agreement__v1/mocks/current?source=sample:0&path=agreementItem.productOfferingPrice.price.value&filterKey=id&filterValue=${popId}`)).json;
       assert.equal(nested.count, 1);
       const pv = plan.fields.find((f) => f.path === 'agreementItem.productOfferingPrice.price.value');
       assert.equal(pv.listPath, 'agreementItem.productOfferingPrice');
-      // reuse: keep source values (ids and fields), even when auto is also sent
       const ru = await req('POST', '/admin/apis/agreement__v1/mocks', {
         count: 1,
         idRules: [{ path: 'id', values: ['MOCK-R'], replaceAll: true }, { path: 'agreementItem.id', auto: true, reuse: true }],
@@ -407,14 +398,206 @@ const step = async (name, fn) => {
       });
       assert.equal(ru.status, 201, JSON.stringify(ru.json));
       const mr = (await req('GET', '/api/agreement/v1/MOCK-R')).json;
-      assert.equal(mr.agreementItem[0].id, sample[0].agreementItem[0].id); // reused – not touched by replace all
-      assert.equal(mr.stcAgreementBusinessId, 'MOCK-R'); // replace all still applies elsewhere
+      assert.equal(mr.agreementItem[0].id, sample[0].agreementItem[0].id);
+      assert.equal(mr.stcAgreementBusinessId, 'MOCK-R');
       assert.equal(mr.agreementItem[0].productOfferingPrice[3].price.value, 999);
       assert.equal(mr.agreementItem[0].productOfferingPrice[4].price.value, sample[0].agreementItem[0].productOfferingPrice[4].price.value);
       assert.equal((await req('POST', '/admin/apis/agreement__v1/mocks', { count: 1, idRules: [{ path: 'id', reuse: true }] })).status, 400);
-      // clash with an existing id
       const clash = await req('POST', '/admin/apis/agreement__v1/mocks', { count: 1, idRules: [{ path: 'id', values: ['MOCK-1'] }] });
       assert.equal(clash.status, 409);
+    });
+
+    await step('must: required data on POST and PATCH op add', async () => {
+      const T = '/admin/apis/agreement__v1/tags';
+      const t = await req('PUT', T, { tags: [{ path: 'name', must: true }, { path: 'agreementItem.stcAgreementItemBusinessId', type: 'string', must: true }] });
+      assert.equal(t.status, 200, JSON.stringify(t.json));
+      assert.equal(t.json.tags.find((x) => x.path === 'name').must, true);
+      const p1 = await req('POST', '/api/agreement/v1', { id: 'must-1', status: 'x' });
+      assert.equal(p1.status, 422);
+      assert.equal(p1.json.code, 'MUST_VIOLATION');
+      assert.match(p1.json.error, /"\/name"/);
+      assert.equal((await req('POST', '/api/agreement/v1', { id: 'must-1', name: '' })).status, 422);
+      const bad = await req('POST', '/api/agreement/v1', { id: 'must-1', name: 'n', agreementItem: [{ id: 'i' }] });
+      assert.equal(bad.status, 422);
+      assert.equal(bad.json.violations[0].path, '/agreementItem/0/stcAgreementItemBusinessId');
+      assert.equal((await req('POST', '/api/agreement/v1', { id: 'must-1', name: 'ok' })).status, 201);
+      const jp = (ops, q = '') => req('PATCH', `/api/agreement/v1/must-1${q}`, ops, { 'content-type': 'application/json-patch+json' });
+      const a1 = await jp([{ op: 'add', path: '/agreementItem', value: [{ id: 'it-1' }] }]);
+      assert.equal(a1.status, 422);
+      assert.equal(a1.json.violations[0].path, '/agreementItem/0/stcAgreementItemBusinessId');
+      const a2 = await jp([{ op: 'add', path: '/agreementItem', value: [{ id: 'it-1', stcAgreementItemBusinessId: 'B1' }] }]);
+      assert.equal(a2.status, 200, JSON.stringify(a2.json));
+      assert.equal((await jp([{ op: 'add', path: '/agreementItem/-', value: { id: 'it-2' } }])).status, 422);
+      assert.equal((await jp([{ op: 'add', path: '/agreementItem/0/stcAgreementItemBusinessId', value: '' }])).status, 422);
+      assert.equal((await jp([{ op: 'replace', path: '/name', value: 'y' }])).status, 200);
+    });
+
+    await step('create (post) + regex: ids generated for new resources and sub-resources', async () => {
+      const T = '/admin/apis/agreement__v1/tags';
+      const jp = (ops, q = '') => req('PATCH', `/api/agreement/v1/must-1${q}`, ops, { 'content-type': 'application/json-patch+json' });
+      assert.equal((await req('GET', '/admin/apis/agreement__v1/tags/regex?path=name')).status, 400);
+      const rg = (await req('GET', '/admin/apis/agreement__v1/tags/regex?path=agreementItem.id')).json;
+      assert.equal(rg.built, 'MSA\\-\\d{6}\\-\\d{6}\\-\\d\\-\\d');
+      assert.ok(rg.examples.length && rg.examples.every((e) => new RegExp(`^${rg.built}$`).test(e)));
+      const pop = (await req('GET', '/admin/apis/agreement__v1/tags/regex?path=agreementItem.productOfferingPrice.id')).json;
+      assert.equal(pop.built, '\\d{9}');
+      assert.equal((await req('GET', '/admin/apis/agreement__v1/tags/regex?path=id&pattern=(')).status, 400);
+      const on = await req('PUT', T, { tags: [{ path: 'agreementItem.id', regex: { enabled: true, built: rg.built } }] });
+      assert.equal(on.status, 200, JSON.stringify(on.json));
+      assert.equal(on.json.tags.find((x) => x.path === 'agreementItem.id').regex.enabled, true);
+      let r = await jp([{ op: 'add', path: '/agreementItem/-', value: { stcAgreementItemBusinessId: 'B2' } }]);
+      assert.match(r.json.agreementItem.at(-1).id, /^MSA-\d{6}-\d{6}-\d-\d$/);
+      r = await jp([{ op: 'add', path: '/agreementItem/-', value: { id: 'KEEP', stcAgreementItemBusinessId: 'B3' } }]);
+      assert.equal(r.json.agreementItem.at(-1).id, 'KEEP');
+      const ov = await req('PUT', T, { tags: [{ path: 'agreementItem.id', create: true, regex: { enabled: true, override: true, pattern: 'ITEM-[0-9]{4}', built: rg.built } }] });
+      assert.equal(ov.status, 200, JSON.stringify(ov.json));
+      r = await jp([{ op: 'add', path: '/agreementItem/-', value: { id: 'KEEP2', stcAgreementItemBusinessId: 'B4' } }]);
+      assert.match(r.json.agreementItem.at(-1).id, /^ITEM-\d{4}$/);
+      r = await jp([{ op: 'add', path: '/agreementItem/-', value: { id: 'COPY-ITEM', stcAgreementItemBusinessId: 'B5' } }], '?generate=false');
+      assert.equal(r.json.agreementItem.at(-1).id, 'COPY-ITEM');
+      r = await jp([{ op: 'replace', path: '/agreementItem/0/id', value: 'REPLACED' }]);
+      assert.equal(r.json.agreementItem[0].id, 'REPLACED');
+      const p = await req('POST', '/api/agreement/v1', { id: 'must-2', name: 'n', agreementItem: [{ id: 'a', stcAgreementItemBusinessId: 'x' }] });
+      assert.match(p.json.agreementItem[0].id, /^ITEM-\d{4}$/);
+      assert.equal((await req('PUT', T, { tags: [{ path: 'id', regex: { enabled: true, override: true, pattern: '(' } }] })).status, 400);
+      await req('PUT', T, { tags: [{ path: 'id', create: true, regex: { enabled: true, override: true, pattern: 'REC-\\d{5}' } }] });
+      const rec = await req('POST', '/api/agreement/v1', { id: 'given', name: 'r' });
+      assert.match(rec.json.id, /^REC-\d{5}$/);
+      const again = await req('PUT', '/admin/apis/agreement__v1/sample', { sample, seed: false });
+      const rootTag = again.json.tags.find((t) => t.path === 'id');
+      assert.equal(rootTag.regex.pattern, 'REC-\\d{5}');
+      assert.equal(again.json.tags.find((t) => t.path === 'name').must, true);
+    });
+
+    await step('create (post) on any tag fills missing values; map copies a parent / sibling value', async () => {
+      const T = '/admin/apis/agreement__v1/tags';
+      const r = await req('PUT', T, {
+        tags: [
+          { path: 'status', type: 'string', create: true, enum: ['Draft', 'Approved'] },
+          { path: 'agreementPeriod.startDateTime', type: 'string', create: true },
+          { path: 'agreementItem.productOfferingPrice.priceType', type: 'string', create: true },
+        ],
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      const p = await req('POST', '/api/agreement/v1', { name: 'fill', agreementItem: [{ stcAgreementItemBusinessId: 'B', productOfferingPrice: [{ id: 'p1' }, { id: 'p2', priceType: 'kept' }] }] });
+      assert.equal(p.status, 201, JSON.stringify(p.json));
+      assert.ok(['Draft', 'Approved'].includes(p.json.status));
+      assert.ok(p.json.agreementPeriod.startDateTime);
+      assert.ok(p.json.agreementItem[0].productOfferingPrice[0].priceType);
+      assert.equal(p.json.agreementItem[0].productOfferingPrice[1].priceType, 'kept');
+      const cand = (await req('GET', '/admin/apis/agreement__v1/tags/map?path=agreementItem.productOfferingPrice.name')).json.candidates.map((c) => c.path);
+      assert.ok(cand.includes('agreementItem.productOfferingPrice.priceType') && cand.includes('agreementItem.stcAgreementItemBusinessId') && cand.includes('name'));
+      assert.ok(!cand.includes('agreementItem.productOfferingPrice.price.value'));
+      assert.equal((await req('GET', '/admin/apis/agreement__v1/tags/map?path=id')).status, 400);
+      const bad = await req('PUT', T, { tags: [{ path: 'agreementItem.productOfferingPrice.name', type: 'string', map: { enabled: true, source: 'agreementItem.productOfferingPrice.price.value' } }] });
+      assert.equal(bad.status, 400);
+      assert.equal(bad.json.code, 'INVALID_MAP');
+      const ok = await req('PUT', T, {
+        tags: [
+          { path: 'agreementItem.productOfferingPrice.name', type: 'string', map: { enabled: true, source: 'agreementItem.stcAgreementItemBusinessId' } },
+          { path: 'stcAgreementBusinessId', type: 'string', map: { enabled: true, source: 'id' } },
+        ],
+      });
+      assert.equal(ok.status, 200, JSON.stringify(ok.json));
+      assert.equal(ok.json.tags.find((t) => t.path === 'stcAgreementBusinessId').map.source, 'id');
+      const m = await req('POST', '/api/agreement/v1', { name: 'map', stcAgreementBusinessId: 'old', agreementItem: [{ stcAgreementItemBusinessId: 'ITEMKEY', productOfferingPrice: [{ id: 'q1', name: 'x' }] }] });
+      assert.equal(m.status, 201, JSON.stringify(m.json));
+      assert.equal(m.json.stcAgreementBusinessId, m.json.id);
+      assert.equal(m.json.agreementItem[0].productOfferingPrice[0].name, 'ITEMKEY');
+      const jp = await req('PATCH', `/api/agreement/v1/${encodeURIComponent(m.json.id)}`, [{ op: 'add', path: '/agreementItem/0/productOfferingPrice/-', value: { id: 'q2' } }], { 'content-type': 'application/json-patch+json' });
+      assert.equal(jp.status, 200, JSON.stringify(jp.json));
+      const added = jp.json.agreementItem[0].productOfferingPrice.at(-1);
+      assert.equal(added.name, 'ITEMKEY');
+      assert.ok(added.priceType);
+      const copy = await req('POST', '/api/agreement/v1?generate=false', { id: 'copy-map', name: 'c', stcAgreementBusinessId: 'keep' });
+      assert.equal(copy.json.stcAgreementBusinessId, 'keep');
+      assert.ok(!copy.json.status);
+      const en = await req('PUT', T, { tags: [{ path: 'stcAgreementBusinessId', enum: ['A'] }] });
+      assert.ok(!en.json.tags.find((t) => t.path === 'stcAgreementBusinessId').map);
+      await req('PUT', T, { tags: [{ path: 'stcAgreementBusinessId', enum: [] }, { path: 'status', create: false, enum: [] }, { path: 'agreementPeriod.startDateTime', create: false }, { path: 'agreementItem.productOfferingPrice.priceType', create: false }, { path: 'agreementItem.productOfferingPrice.name', map: null }] });
+    });
+
+    await step('POST / PATCH return the final stored payload', async () => {
+      await req('PUT', '/admin/apis/agreement__v1/tags', { tags: [{ path: 'id', create: true }, { path: 'status', create: true }, { path: 'stcAgreementBusinessId', map: { enabled: true, source: 'id' } }] });
+      const p = await req('POST', '/api/agreement/v1', { id: 'client-id', name: 'final', agreementItem: [{ id: 'i1', stcAgreementItemBusinessId: 'k' }] });
+      assert.equal(p.status, 201, JSON.stringify(p.json));
+      const stored = (await req('GET', `/api/agreement/v1/${encodeURIComponent(p.json.id)}`)).json;
+      assert.deepEqual(p.json, stored);
+      assert.notEqual(p.json.id, 'client-id');
+      assert.equal(p.json.stcAgreementBusinessId, p.json.id);
+      assert.ok(p.json.status);
+      assert.equal(p.headers.get('location'), `/api/agreement/v1/${encodeURIComponent(p.json.id)}`);
+      const many = await req('POST', '/api/agreement/v1', [{ name: 'm1' }, { name: 'm2' }]);
+      assert.equal(many.json.length, 2);
+      for (const r of many.json) assert.deepEqual(r, (await req('GET', `/api/agreement/v1/${encodeURIComponent(r.id)}`)).json);
+      const jp = await req('PATCH', `/api/agreement/v1/${encodeURIComponent(p.json.id)}`, [{ op: 'replace', path: '/name', value: 'patched' }, { op: 'add', path: '/agreementItem/-', value: { stcAgreementItemBusinessId: 'k2' } }], { 'content-type': 'application/json-patch+json' });
+      assert.equal(jp.status, 200, JSON.stringify(jp.json));
+      const after = (await req('GET', `/api/agreement/v1/${encodeURIComponent(p.json.id)}`)).json;
+      assert.deepEqual(jp.json, after);
+      assert.equal(jp.json.name, 'patched');
+      assert.equal(jp.json.agreementItem.length, 2);
+      const mp = await req('PATCH', `/api/agreement/v1/${encodeURIComponent(p.json.id)}`, { description: 'merged' }, { 'content-type': 'application/merge-patch+json' });
+      assert.deepEqual(mp.json, (await req('GET', `/api/agreement/v1/${encodeURIComponent(p.json.id)}`)).json);
+      assert.equal(mp.json.agreementItem.length, 2);
+      await req('PUT', '/admin/apis/agreement__v1/tags', { tags: [{ path: 'id', create: false }, { path: 'status', create: false }, { path: 'stcAgreementBusinessId', map: null }] });
+    });
+
+    let userId;
+    await step('admin users: create, list masked, copy password, edit, delete', async () => {
+      const gen = (await req('GET', '/admin/users/password')).json.password;
+      assert.equal(gen.length, 16);
+      assert.equal((await req('POST', '/admin/users', { firstName: 'A' })).status, 400);
+      assert.equal((await req('POST', '/admin/users', { firstName: 'A', lastName: 'B', email: 'nope' })).json.code, 'INVALID_EMAIL');
+      const c = await req('POST', '/admin/users', { firstName: 'Rahul', lastName: 'T', email: 'Rahul@Example.com', password: gen });
+      assert.equal(c.status, 201, JSON.stringify(c.json));
+      assert.equal(c.json.password, '******');
+      assert.equal(c.json.email, 'rahul@example.com');
+      assert.equal(c.json.active, true);
+      userId = c.json._id;
+      assert.equal((await req('GET', `/admin/users/${userId}/password`)).json.password, gen);
+      const weak = await req('POST', '/admin/users', { firstName: 'B', lastName: 'C', email: 'b@example.com', password: 'abc' });
+      const weakPw = (await req('GET', `/admin/users/${weak.json._id}/password`)).json.password;
+      assert.notEqual(weakPw, 'abc');
+      assert.equal(weakPw.length, 16);
+      assert.equal((await req('POST', '/admin/users', { firstName: 'X', lastName: 'Y', email: 'rahul@example.com' })).status, 409);
+      const list = (await req('GET', '/admin/users')).json;
+      assert.equal(list.length, 2);
+      assert.ok(list.every((u) => u.password === '******'));
+      const e = await req('PATCH', `/admin/users/${userId}`, { firstName: 'Rahul K', active: false });
+      assert.equal(e.json.firstName, 'Rahul K');
+      assert.equal(e.json.active, false);
+      assert.equal((await req('PATCH', `/admin/users/${userId}`, { password: 'x' })).status, 400);
+      assert.equal((await req('PATCH', `/admin/users/${userId}`, { email: 'b@example.com' })).status, 409);
+      assert.equal((await req('GET', `/admin/users/${userId}/password`)).json.password, gen);
+      assert.equal((await req('DELETE', `/admin/users/${weak.json._id}`)).status, 200);
+      assert.equal((await req('GET', '/admin/users')).json.length, 1);
+    });
+
+    await step('admin folders: unique name, user association', async () => {
+      const opts = (await req('GET', '/admin/folders/options')).json;
+      assert.deepEqual(opts.domain, ['fixedline', 'gsm']);
+      const body = { domain: 'fixedline', env: 'dev', team: 'bau', role: 'dev', technology: 'ms' };
+      assert.equal((await req('POST', '/admin/folders', { ...body, env: 'prod' })).status, 400);
+      assert.equal((await req('POST', '/admin/folders', { ...body, team: '' })).status, 400);
+      const f = await req('POST', '/admin/folders', body);
+      assert.equal(f.status, 201, JSON.stringify(f.json));
+      assert.equal(f.json.name, 'fixedline-dev-bau-dev-ms');
+      const dup = await req('POST', '/admin/folders', body);
+      assert.equal(dup.status, 409);
+      assert.equal(dup.json.code, 'FOLDER_EXISTS');
+      const fid = encodeURIComponent(f.json._id);
+      const u2 = (await req('POST', '/admin/users', { firstName: 'Second', lastName: 'User', email: 's@example.com' })).json;
+      assert.equal((await req('PUT', `/admin/folders/${fid}/users`, { userIds: ['missing'] })).status, 400);
+      const a = await req('PUT', `/admin/folders/${fid}/users`, { userIds: [userId, u2._id] });
+      assert.equal(a.status, 200, JSON.stringify(a.json));
+      assert.equal(a.json.users.length, 2);
+      assert.ok(a.json.users.every((u) => u.password === '******'));
+      assert.equal((await req('GET', '/admin/folders')).json[0].userCount, 2);
+      const ed = await req('PUT', `/admin/folders/${fid}/users`, { userIds: [userId] });
+      assert.deepEqual(ed.json.users.map((u) => u._id), [userId]);
+      await req('PUT', `/admin/folders/${fid}/users`, { userIds: [userId, u2._id] });
+      await req('DELETE', `/admin/users/${u2._id}`);
+      assert.deepEqual((await req('GET', `/admin/folders/${fid}`)).json.userIds, [userId]);
     });
 
     await step('persisted across restart', async () => {
@@ -427,6 +610,8 @@ const step = async (name, fn) => {
       await new Promise((resolve) => srv2.stdout.on('data', (d) => d.toString().includes('listening') && resolve()));
       const g = (await req('GET', `/api/agreement/v1/${id}`)).json;
       assert.equal(g.description, 'enum ok');
+      assert.equal((await req('GET', '/admin/users')).json.length, 1);
+      assert.equal((await req('GET', '/admin/folders')).json[0].name, 'fixedline-dev-bau-dev-ms');
       srv2.kill();
     });
 

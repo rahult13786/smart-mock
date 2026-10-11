@@ -4,6 +4,7 @@ import { admin } from './api.js';
 import RegisterPage from './pages/RegisterPage.jsx';
 import ApiListPage from './pages/ApiListPage.jsx';
 import DetailPage from './pages/DetailPage.jsx';
+import AdminPage from './pages/AdminPage.jsx';
 
 const ApisContext = createContext({ apis: [], refresh: async () => {} });
 export const useApis = () => useContext(ApisContext);
@@ -33,6 +34,9 @@ export default function App() {
           <NavLink to="/register" className="nav-item register">
             <span className="plus">＋</span> Register API
           </NavLink>
+          <NavLink to="/admin-view" className="nav-item admin-link">
+            <span className="plus">⚙</span> Admin view
+          </NavLink>
           <div className="nav-heading">APIs</div>
           {apis.length === 0 && <div className="nav-empty">None registered yet</div>}
           {apis.map((a) => (
@@ -49,6 +53,8 @@ export default function App() {
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/browse/:key" element={<ApiListPage />} />
             <Route path="/browse/:key/records/:id" element={<DetailPage />} />
+            <Route path="/admin-view" element={<Navigate to="/admin-view/users" replace />} />
+            <Route path="/admin-view/:tab" element={<AdminPage />} />
             <Route path="*" element={<Navigate to="/register" replace />} />
           </Routes>
         </main>

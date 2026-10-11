@@ -1,7 +1,6 @@
 export const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 export const isScalar = (v) => v === null || v === undefined || ['string', 'number', 'boolean'].includes(typeof v);
 
-/** "stcAgreementBusinessId" -> "Stc Agreement Business Id", "@referredType" -> "@referred Type" */
 export function humanize(key) {
   return String(key)
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -19,7 +18,6 @@ export function getIn(obj, path) {
   return cur;
 }
 
-/** Immutable set with structural sharing – only the nodes along `path` are copied. */
 export function setIn(obj, path, value) {
   if (!path.length) return value;
   const [head, ...rest] = path;
@@ -28,11 +26,17 @@ export function setIn(obj, path, value) {
   return copy;
 }
 
-/** Union of keys across rows, in first-seen order (scans at most `max` rows). */
+const ID_KEY = /^id$/i;
+export const idFirst = (keys) => [...keys.filter((k) => ID_KEY.test(k)), ...keys.filter((k) => !ID_KEY.test(k))];
+export const idFirstEntries = (obj) => {
+  const entries = Object.entries(obj);
+  return [...entries.filter(([k]) => ID_KEY.test(k)), ...entries.filter(([k]) => !ID_KEY.test(k))];
+};
+
 export function columnsOf(rows, max = 300) {
   const seen = new Set();
   for (const r of rows.slice(0, max)) if (isObj(r)) Object.keys(r).forEach((k) => seen.add(k));
-  return [...seen];
+  return idFirst([...seen]);
 }
 
 export function summarize(v) {
@@ -45,7 +49,6 @@ export function summarize(v) {
   return v === null || v === undefined ? '' : String(v);
 }
 
-/** RFC 7396 merge patch that turns `from` into `to` (arrays are replaced wholesale). */
 export function createMergePatch(from, to) {
   if (!isObj(from) || !isObj(to)) return to;
   const patch = {};
@@ -62,7 +65,6 @@ export function createMergePatch(from, to) {
   return patch;
 }
 
-/** Parse text typed into a scalar input, keeping the original type where possible. */
 export function coerce(text, original) {
   if (typeof original === 'number') {
     if (text.trim() === '') return null;
@@ -74,7 +76,6 @@ export function coerce(text, original) {
   return text;
 }
 
-/** "v1" -> "v2", "1.0" -> "1.1", "beta" -> "beta-2"; skips versions already taken. */
 export function nextVersion(version, taken = []) {
   const bump = (v) => {
     const m = String(v).match(/^(.*?)(\d+)(\D*)$/);
@@ -85,18 +86,11 @@ export function nextVersion(version, taken = []) {
   return v;
 }
 
-/** JSON Pointer (RFC 6901) for a path array, e.g. ["a", 0, "b/c"] -> "/a/0/b~1c" */
 export const toPointer = (path) => path.map((p) => '/' + String(p).replace(/~/g, '~0').replace(/\//g, '~1')).join('');
 
 const typeName = (v) => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
 const isEmpty = (v) => v === undefined || v === null || v === '' || (isObj(v) && !Object.keys(v).length);
 
-/**
- * Structure of an existing list, used to build the "add item" form and to validate new items.
- *  kind: 'object' | 'scalar' | 'empty'
- *  fields: [{key, types:[...], kind:'scalar'|'object'|'array', common, constant?}]
- *  common: keys filled in at least 75% of the items – the criteria a new item must meet
- */
 const COMMON_RATIO = 0.75;
 
 export function listShape(rows) {
@@ -106,7 +100,7 @@ export function listShape(rows) {
     return { kind: 'scalar', types: [...new Set(items.map(typeName))], fields: [], common: [] };
   }
   const objs = items.filter(isObj).slice(0, 500);
-  if (objs.every((o) => !Object.keys(o).length)) return { kind: 'empty', fields: [], common: [] }; // e.g. [{}]
+  if (objs.every((o) => !Object.keys(o).length)) return { kind: 'empty', fields: [], common: [] };
   const fields = new Map();
   for (const o of objs) {
     for (const [k, v] of Object.entries(o)) {
@@ -125,22 +119,14 @@ export function listShape(rows) {
       key: f.key,
       types,
       kind,
-      // "common" = used by (almost) every item; a tolerance keeps the criteria stable
-      // when a few sparse items have been added over time
       common: nonEmpty.length > 0 && f.count >= Math.max(1, Math.ceil(nonEmpty.length * COMMON_RATIO)),
-      // e.g. "@type": "CharacteristicValue" on every item -> prefilled in the form
       constant: f.values.size === 1 && f.count === nonEmpty.length && f.key.startsWith('@') ? [...f.values][0] : undefined,
     };
   });
+  out.sort((a, b) => (ID_KEY.test(b.key) ? 1 : 0) - (ID_KEY.test(a.key) ? 1 : 0));
   return { kind: 'object', fields: out, common: out.filter((f) => f.common).map((f) => f.key) };
 }
 
-/**
- * Check new items against the list they are added to.
- * Rule: an object must contain at least one of the keys every existing item has (the "common tags");
- * when the items have no key in common, at least one key that the list already uses.
- * Returns {errors:[], warnings:[], newKeys:[]}.
- */
 export function validateNewItems(items, rows) {
   const shape = listShape(rows);
   const errors = [];
@@ -180,7 +166,6 @@ export function validateNewItems(items, rows) {
   return { errors, warnings, newKeys: [...newKeys] };
 }
 
-/** Immutable remove: list items are spliced out, object keys deleted. */
 export function removeIn(obj, path) {
   if (path.length === 1) {
     const [k] = path;
@@ -194,5 +179,4 @@ export function removeIn(obj, path) {
   return copy;
 }
 
-/** Concrete path ["characteristic", 3, "name"] -> tag path "characteristic.name" */
 export const tagPathOf = (path) => path.filter((p) => typeof p !== 'number').join('.');

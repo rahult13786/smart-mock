@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { admin, data } from '../api.js';
 
-const ALL = '*'; // filter choice: all items of the list
+const ALL = '*';
 
 const splitValues = (text) =>
   String(text || '')
@@ -12,11 +12,6 @@ const splitValues = (text) =>
 
 const show = (v) => (v === null || v === undefined ? '' : typeof v === 'string' ? v : JSON.stringify(v));
 
-/**
- * "Create mocks": copy a template record N (≤ 10) times. Ids are replaced (typed values, or generated
- * like the sample, optionally everywhere they appear) and any other field can be set or generated,
- * optionally only in list items matching a filter. Runs completely offline.
- */
 export default function MockModal({ api, onClose, onCreated }) {
   const [sources, setSources] = useState([{ value: 'sample:0', label: 'Sample record 0' }]);
   const [source, setSource] = useState('sample:0');
@@ -25,7 +20,7 @@ export default function MockModal({ api, onClose, onCreated }) {
   const [idRules, setIdRules] = useState([]);
   const [fieldRules, setFieldRules] = useState([]);
   const [error, setError] = useState('');
-  const [confirm, setConfirm] = useState(null); // warnings shown before saving
+  const [confirm, setConfirm] = useState(null);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState(null);
 
@@ -35,7 +30,6 @@ export default function MockModal({ api, onClose, onCreated }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  // template choices: the sample records and stored records
   useEffect(() => {
     (async () => {
       const list = [];
@@ -43,13 +37,11 @@ export default function MockModal({ api, onClose, onCreated }) {
         const s = await admin.sample(api._id);
         (Array.isArray(s) ? s : [s]).forEach((r, i) => list.push({ value: `sample:${i}`, label: `Sample record ${i}${r?.id ? ` – ${r.id}` : ''}` }));
       } catch {
-        /* no sample */
       }
       try {
         const r = await data(api.basePath).summary({ limit: 50 });
         r.items.forEach((it) => list.push({ value: `record:${it.id}`, label: `Stored record – ${it.id}` }));
       } catch {
-        /* ignore */
       }
       if (list.length) setSources(list);
     })();
@@ -79,7 +71,7 @@ export default function MockModal({ api, onClose, onCreated }) {
     const warnings = [];
     if (!(Number(count) >= 1 && Number(count) <= (plan?.max || 10))) errors.push(`Number of mocks must be between 1 and ${plan?.max || 10}`);
     for (const r of idRules) {
-      if (r.reuse) continue; // value kept as is
+      if (r.reuse) continue;
       const vals = splitValues(r.text);
       if (r.root && !vals.length && !r.auto) errors.push('The record id must change – enter ids or tick auto-generate');
       if (vals.length && vals.length < n) warnings.push(`${r.path}: ${vals.length} value${vals.length === 1 ? '' : 's'} for ${n} mocks – ${n - vals.length} will be randomly generated`);
@@ -91,7 +83,7 @@ export default function MockModal({ api, onClose, onCreated }) {
       const f = fieldsByPath.get(r.path);
       if (!f) { errors.push(`"${r.path}" is not a field of the template`); continue; }
       if (f.listPath && !r.filterKey) { errors.push(`${r.path}: choose a filter first (or "All items")`); continue; }
-      if (r.reuse) continue; // value kept as is
+      if (r.reuse) continue;
       const vals = splitValues(r.text);
       if (!vals.length && !r.auto) errors.push(`${r.path}: enter values or tick auto-generate`);
       if (f.enum && vals.some((v) => !f.enum.map(String).includes(v))) {
@@ -108,7 +100,7 @@ export default function MockModal({ api, onClose, onCreated }) {
     const { errors, warnings } = check();
     if (errors.length) return setError(errors.join(' · '));
     setError('');
-    if (warnings.length && !confirm) return setConfirm(warnings); // show once, the next click saves
+    if (warnings.length && !confirm) return setConfirm(warnings);
     setSaving(true);
     try {
       const r = await admin.createMocks(api._id, {
@@ -317,12 +309,8 @@ export default function MockModal({ api, onClose, onCreated }) {
   );
 }
 
-/**
- * One "Other fields" row. For a field inside a list the filter comes first: the user picks which
- * list items to change (or "All items"), then the current value of those items is shown.
- */
 function FieldRow({ rule: r, field: f, apiKey, source, onChange, onRemove, index }) {
-  const [current, setCurrent] = useState(null); // {count, values}
+  const [current, setCurrent] = useState(null);
   const needsFilter = !!f?.listPath;
   const filterReady = !needsFilter || r.filterKey === ALL || (r.filterKey && r.filterValue !== '');
   const fk = f?.filterKeys?.find((k) => k.key === r.filterKey);
@@ -345,7 +333,7 @@ function FieldRow({ rule: r, field: f, apiKey, source, onChange, onRemove, index
     };
   }, [f, filterReady, r.path, r.filterKey, r.filterValue, apiKey, source]);
 
-  const locked = !filterReady; // list field without a filter yet
+  const locked = !filterReady;
 
   return (
     <tr>

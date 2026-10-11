@@ -1,5 +1,3 @@
-// Mock generation ("Create mocks"): copies a template record N times and changes ids / chosen fields.
-// Everything runs locally – no network access needed.
 const { listPaths } = require('./tags');
 const { locate } = require('./enums');
 
@@ -7,7 +5,6 @@ const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const ID_KEY = /^id$/i;
 const MAX_MOCKS = 10;
 
-/* ---------------------------------------------------------------- random values like the sample */
 const rnd = (n) => Math.floor(Math.random() * n);
 const pick = (a) => a[rnd(a.length)];
 const WORDS = ('alpha beta gamma delta omega nova prime core smart flex plus pro max lite basic standard premium ' +
@@ -15,14 +12,13 @@ const WORDS = ('alpha beta gamma delta omega nova prime core smart flex plus pro
   'central digital physical enterprise retail partner customer account plan bundle offer level tier value').split(' ');
 
 const pad = (n, l = 2) => String(n).padStart(l, '0');
-const DMY = /^(\d{2})\/(\d{2})\/(\d{4})( \d{2}:\d{2}:\d{2})?$/; // 06/10/2026 17:08:01
+const DMY = /^(\d{2})\/(\d{2})\/(\d{4})( \d{2}:\d{2}:\d{2})?$/;
 const ISO = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
 
 function shiftDate(d) {
   return new Date(d.getTime() + (rnd(730) - 365) * 86400000 + rnd(86400) * 1000);
 }
 
-/** a value of the same kind / shape as `v` */
 function generateLike(v, { enumValues, pool } = {}) {
   if (enumValues && enumValues.length) return pick(enumValues);
   if (typeof v === 'boolean') return Math.random() < 0.5;
@@ -52,7 +48,6 @@ function generateLike(v, { enumValues, pool } = {}) {
     return v.length === 10 ? iso.slice(0, 10) : v.includes('.') ? iso : iso.replace(/\.\d{3}Z$/, 'Z');
   }
   if (/\d/.test(v)) return randomizeDigits(v);
-  // plain text: same number of words, capitalisation kept
   const words = v.trim().split(/\s+/);
   const out = words.map((w) => {
     const n = pick(WORDS);
@@ -70,7 +65,6 @@ function randomizeDigits(s) {
   });
 }
 
-/** new id shaped like `old`, not in `used` */
 function generateId(old, used) {
   for (let i = 0; i < 50; i++) {
     let v;
@@ -87,8 +81,6 @@ function generateId(old, used) {
   return v;
 }
 
-/* ---------------------------------------------------------------- lists & filters */
-/** walk keys from the root without flattening the last level */
 function nodesAt(doc, segs) {
   let nodes = [doc];
   for (const seg of segs) {
@@ -103,10 +95,6 @@ function nodesAt(doc, segs) {
   return nodes;
 }
 
-/**
- * The closest list a field lives in: "characteristic.value" -> {listPath:"characteristic", rel:"value"},
- * "agreementItem.productOfferingPrice.price.value" -> {listPath:"agreementItem.productOfferingPrice", rel:"price.value"}.
- */
 function nearestList(doc, path) {
   const segs = path.split('.');
   for (let k = segs.length - 1; k >= 1; k--) {
@@ -115,7 +103,6 @@ function nearestList(doc, path) {
   return null;
 }
 
-/** pointer of the list item that contains occurrence `pointer` of a field in list `listPath` */
 function itemPointer(pointer, listPath) {
   const keys = listPath.split('.');
   const segs = pointer.split('/').slice(1);
@@ -131,7 +118,6 @@ function itemPointer(pointer, listPath) {
   return null;
 }
 
-/** occurrences of `path`, restricted to list items where item[filter.key] == filter.value */
 function matchOccurrences(doc, path, filter) {
   const occ = locate(doc, path);
   if (!filter || !filter.key) return occ;
@@ -144,16 +130,13 @@ function matchOccurrences(doc, path, filter) {
   });
 }
 
-/** current value(s) shown in the popup for a field + filter */
 function currentValues(doc, path, filter) {
   const occ = matchOccurrences(doc, path, filter);
   return { count: occ.length, values: [...new Set(occ.slice(0, 200).map((o) => o.value))].slice(0, 10) };
 }
 
-/* ---------------------------------------------------------------- plan: what can be changed */
 const tagPathOf = (pointerSegs) => pointerSegs.filter((s) => !/^\d+$/.test(s)).join('.');
 
-/** All id fields (any level) of the template, grouped by tag path. */
 function idPaths(template) {
   const groups = new Map();
   const walk = (node, segs) => {
@@ -176,7 +159,6 @@ function idPaths(template) {
     .map((g) => ({ path: g.path, root: g.root, count: g.count, distinct: g.values.length, sample: g.values.slice(0, 5) }));
 }
 
-/** Value fields of the template, with the list they belong to and the filter keys of that list. */
 function fieldPaths(template, tags) {
   const enums = new Map(tags.filter((t) => t.enum?.length).map((t) => [t.path, t.enum]));
   return listPaths([template], { scan: 50, limit: 3000, maxDepth: 8 })
@@ -186,7 +168,6 @@ function fieldPaths(template, tags) {
       const list = nearestList(template, p.path);
       let filterKeys;
       if (list) {
-        // scalar keys of the list items and their values -> "filter" column
         const items = locate(template, list.listPath).map((x) => x.value).filter(isObj);
         const keys = new Map();
         for (const it of items) {
@@ -211,7 +192,6 @@ function fieldPaths(template, tags) {
     });
 }
 
-/* ---------------------------------------------------------------- build the mocks */
 function setByPointer(doc, pointer, value) {
   const segs = pointer.split('/').slice(1).map((s) => s.replace(/~1/g, '/').replace(/~0/g, '~'));
   let cur = doc;
@@ -222,7 +202,6 @@ function setByPointer(doc, pointer, value) {
 
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** replace every old value (whole value, or inside longer strings) in one pass; `skip` = pointers set explicitly */
 function replaceAll(doc, mapping, skip) {
   const strOld = [...mapping.keys()].filter((k) => typeof k === 'string' && k.length >= 3).sort((a, b) => b.length - a.length);
   const re = strOld.length ? new RegExp(strOld.map(escRe).join('|'), 'g') : null;
@@ -234,7 +213,7 @@ function replaceAll(doc, mapping, skip) {
       return out;
     }
     if (skip.has(ptr)) return node;
-    if (mapping.has(node) && typeof node !== 'string') return mapping.get(node); // numbers: exact match
+    if (mapping.has(node) && typeof node !== 'string') return mapping.get(node);
     if (typeof node === 'string') {
       if (mapping.has(node)) return mapping.get(node);
       if (re) return node.replace(re, (m) => String(mapping.get(m)));
@@ -244,12 +223,6 @@ function replaceAll(doc, mapping, skip) {
   return walk(doc, '');
 }
 
-/**
- * spec: { count, idRules:[{path, values:[], auto, reuse, replaceAll}], fieldRules:[{path, values:[], auto, reuse, filter:{key, value}}] }
- * reuse: keep the template's value as is (auto-generate / values are ignored)
- * existingIds: Set of record ids already stored (root ids must not clash).
- * Returns { records, warnings }.
- */
 function buildMocks(template, spec, tags, existingIds) {
   const count = Number(spec.count);
   if (!Number.isInteger(count) || count < 1 || count > MAX_MOCKS) {
@@ -263,18 +236,16 @@ function buildMocks(template, spec, tags, existingIds) {
 
   for (let m = 0; m < count; m++) {
     let doc = structuredClone(template);
-    const mapping = new Map(); // old -> new, for "replace all"
-    const setPtrs = new Set(); // pointers that "replace all" must not touch
-    // "reuse" = keep the template value exactly – also protected from "replace all"
+    const mapping = new Map();
+    const setPtrs = new Set();
     for (const r of (spec.idRules || []).filter((x) => x.reuse && x.path !== 'id')) locate(doc, r.path).forEach((o) => setPtrs.add(o.pointer));
     for (const r of (spec.fieldRules || []).filter((x) => x.reuse)) matchOccurrences(doc, r.path, r.filter).forEach((o) => setPtrs.add(o.pointer));
 
-    // 1. id fields
     const rules = [rootRule, ...(spec.idRules || []).filter((r) => r.path !== 'id')];
     for (const rule of rules) {
       if (rule.reuse) {
         if (rule.path === 'id') throw { status: 400, message: 'The record id cannot be reused – every mock needs its own id' };
-        continue; // keep the template's value as is
+        continue;
       }
       const occ = locate(doc, rule.path);
       if (!occ.length) continue;
@@ -307,9 +278,8 @@ function buildMocks(template, spec, tags, existingIds) {
     }
     if (mapping.size) doc = replaceAll(doc, mapping, setPtrs);
 
-    // 2. other fields
     for (const rule of spec.fieldRules || []) {
-      if (rule.reuse) continue; // keep the template's value as is
+      if (rule.reuse) continue;
       const occ = matchOccurrences(doc, rule.path, rule.filter);
       if (!occ.length) {
         if (m === 0) warnings.push(`"${rule.path}"${rule.filter?.key ? ` where ${rule.filter.key} = ${rule.filter.value}` : ''} not found in the template – skipped`);
@@ -325,7 +295,7 @@ function buildMocks(template, spec, tags, existingIds) {
           if (typeof o.value === 'number' && !Number.isNaN(Number(nv))) nv = Number(nv);
           if (typeof o.value === 'boolean' && (nv === 'true' || nv === 'false')) nv = nv === 'true';
         } else if (rule.auto || (rule.values || []).length) {
-          nv = generateLike(o.value, { enumValues, pool }); // fewer values than mocks -> random
+          nv = generateLike(o.value, { enumValues, pool });
         } else continue;
         setByPointer(doc, o.pointer, nv);
       }

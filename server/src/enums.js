@@ -1,11 +1,7 @@
-// Enum (allowed values) support for tags.
-// A tag may carry `enum: [..]`. On POST / PATCH every value found at the tag's path must be one
-// of the allowed values (null / missing values are allowed – enum restricts what is sent, not presence).
 const { splitPath, isObj, isScalar } = require('./tags');
 
 const esc = (s) => String(s).replace(/~/g, '~0').replace(/\//g, '~1');
 
-/** All concrete locations of a dotted tag path in a record: [{pointer, value}] (arrays are walked). */
 function locate(record, path) {
   const segs = splitPath(path);
   let cur = [{ pointer: '', value: record }];
@@ -27,7 +23,6 @@ function locate(record, path) {
     cur = next;
     if (!cur.length) return [];
   }
-  // a path ending on a list of scalars -> every element
   return cur.flatMap((c) => (Array.isArray(c.value) ? c.value.map((v, i) => ({ pointer: `${c.pointer}/${i}`, value: v })) : [c]));
 }
 
@@ -44,15 +39,10 @@ function getByPointer(doc, pointer) {
 
 const allowed = (tag, v) => v === null || v === undefined || tag.enum.some((e) => e === v);
 
-/**
- * Enum violations in `record`. With `before` (PATCH), only values that were not stored at that path
- * already are reported, so data stored before an enum was defined does not block other updates.
- */
 function enumViolations(record, tags, before) {
   const out = [];
   for (const tag of tags) {
     if (!Array.isArray(tag.enum) || !tag.enum.length) continue;
-    // values already stored at this path (PATCH) – re-ordering / deleting items must not fail on legacy values
     const existing = before !== undefined ? new Set(locate(before, tag.path).map((x) => JSON.stringify(x.value))) : null;
     for (const { pointer, value } of locate(record, tag.path)) {
       if (!isScalar(value) && value !== undefined) {
@@ -60,7 +50,7 @@ function enumViolations(record, tags, before) {
         continue;
       }
       if (allowed(tag, value)) continue;
-      if (existing && existing.has(JSON.stringify(value))) continue; // value was already stored (unchanged)
+      if (existing && existing.has(JSON.stringify(value))) continue;
       out.push({ path: pointer, tag: tag.path, value, allowed: tag.enum });
     }
   }
@@ -81,7 +71,6 @@ function enumError(violations) {
   };
 }
 
-/** Clean an enum definition for a tag of `type`. Returns array (possibly empty) or throws. */
 function normalizeEnum(values, type, path) {
   if (values == null) return undefined;
   if (!Array.isArray(values)) throw { status: 400, message: `enum of "${path}" must be an array` };

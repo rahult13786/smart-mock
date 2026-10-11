@@ -1,28 +1,27 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { humanize } from '../util/value.js';
+import JsonTree from './JsonTree.jsx';
 
 const kindOf = (v) => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
 const label = (path) => path.map((p) => (typeof p === 'number' ? `[${p}]` : humanize(p))).join(' › ');
+const pretty = (v) => JSON.stringify(v, null, 2);
 
-/**
- * Raw JSON of one node (a list, or one item). Editable; Save writes it back to the stored record.
- * The node must keep its kind (a list stays a list, an object stays an object).
- */
 export function RawJsonEditor({ value, onSave, rows = 18 }) {
-  const pretty = (v) => JSON.stringify(v, null, 2);
-  const [text, setText] = useState(() => pretty(value));
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const dirtyRef = useRef(false);
 
-  // follow outside changes (e.g. after a save) while the user has not typed anything
-  useEffect(() => {
-    if (!dirtyRef.current) setText(pretty(value));
-  }, [value]);
+  const size = pretty(value).length;
+  const dirty = editing && text !== pretty(value);
 
-  const dirty = text !== pretty(value);
-  dirtyRef.current = dirty;
+  function startEdit() {
+    setText(pretty(value));
+    setError('');
+    setSaved(false);
+    setEditing(true);
+  }
 
   async function save() {
     let parsed;
@@ -38,8 +37,7 @@ export function RawJsonEditor({ value, onSave, rows = 18 }) {
     setError('');
     try {
       await onSave(parsed);
-      dirtyRef.current = false;
-      setText(pretty(parsed));
+      setEditing(false);
       setSaved(true);
     } catch (e) {
       setError(e.message);
@@ -50,31 +48,43 @@ export function RawJsonEditor({ value, onSave, rows = 18 }) {
 
   return (
     <div className="raw-editor">
-      <textarea
-        className="code"
-        rows={rows}
-        spellCheck={false}
-        value={text}
-        onChange={(e) => {
-          setText(e.target.value);
-          setError('');
-          setSaved(false);
-        }}
-      />
+      {editing ? (
+        <textarea
+          className="code"
+          rows={rows}
+          spellCheck={false}
+          autoFocus
+          value={text}
+          onChange={(e) => {
+            setText(e.target.value);
+            setError('');
+          }}
+        />
+      ) : (
+        <div className="tree-box" style={{ maxHeight: `${rows * 1.5}em` }}>
+          <JsonTree value={value} />
+        </div>
+      )}
       {error && <div className="alert error">{error}</div>}
       <div className="row gap">
-        <button className="btn primary" disabled={!dirty || saving} onClick={save}>{saving ? 'Saving…' : 'Save JSON'}</button>
-        <button className="btn ghost" disabled={!dirty || saving} onClick={() => { setText(pretty(value)); setError(''); }}>Reset</button>
-        <button className="btn ghost" onClick={() => navigator.clipboard?.writeText(text)}>Copy to clipboard</button>
+        {editing ? (
+          <>
+            <button className="btn primary" disabled={!dirty || saving} onClick={save}>{saving ? 'Saving…' : 'Save JSON'}</button>
+            <button className="btn ghost" disabled={!dirty || saving} onClick={() => { setText(pretty(value)); setError(''); }}>Reset</button>
+            <button className="btn ghost" disabled={saving} onClick={() => { setEditing(false); setError(''); }}>Cancel</button>
+          </>
+        ) : (
+          onSave && <button className="btn" onClick={startEdit}>Edit JSON</button>
+        )}
+        <button className="btn ghost" onClick={() => navigator.clipboard?.writeText(editing ? text : pretty(value))}>Copy to clipboard</button>
         <span className="spacer" />
-        {saved && !dirty && <span className="ok-text small">Saved</span>}
-        <span className="muted small">{(text.length / 1024).toFixed(1)} KB</span>
+        {saved && !editing && <span className="ok-text small">Saved</span>}
+        <span className="muted small">{(size / 1024).toFixed(1)} KB</span>
       </div>
     </div>
   );
 }
 
-/** "Raw JSON" button on a list heading opens this. */
 export function RawJsonModal({ path, value, onSave, onClose }) {
   useEffect(() => {
     const onKey = (e) => e.key === 'Escape' && onClose();

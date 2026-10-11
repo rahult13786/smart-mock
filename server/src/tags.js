@@ -1,18 +1,9 @@
-// Tag (searchable path) helpers.
-//
-// Auto tags  : the 1st- and 2nd-level scalar paths of the sample, excluding arrays.
-// Custom tags: any dotted path the user adds (may go deeper and may pass through arrays,
-//              e.g. "characteristic.name" or "agreementItem.productOfferingPrice.priceType").
-//              They are validated against the sample before they are saved.
-
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isScalar = (v) => v === null || ['string', 'number', 'boolean'].includes(typeof v);
 const typeOf = (v) => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
 
-const DEFAULT_SEARCHABLE = new Set(['id', 'name', 'status']);
 const TAG_TYPES = ['string', 'number', 'boolean'];
 
-/** "a.b.c", "/a/b/c" or "a[].b" -> ["a","b","c"] */
 function splitPath(p) {
   return String(p || '')
     .trim()
@@ -24,11 +15,6 @@ function splitPath(p) {
 }
 const normalizePath = (p) => splitPath(p).join('.');
 
-/**
- * Resolve a path in a record. Arrays met on the way are flattened (every element is visited);
- * a numeric segment on an array selects that index.
- * Returns { found, values: [terminal values] }.
- */
 function resolve(record, path) {
   const segs = Array.isArray(path) ? path : splitPath(path);
   let cur = [record];
@@ -48,12 +34,10 @@ function resolve(record, path) {
     cur = next;
     if (!cur.length) return { found: false, values: [] };
   }
-  // a path ending on an array of scalars yields those scalars
   const values = cur.flatMap((v) => (Array.isArray(v) ? v : [v]));
   return { found: true, values };
 }
 
-/** Types of the scalar values found at `path` across the reference records. */
 function inspectPath(records, path) {
   const types = new Set();
   let found = false;
@@ -71,7 +55,6 @@ function inspectPath(records, path) {
   return { found, types: [...types], nonScalar: nonScalar && types.size === 0 };
 }
 
-/** Every scalar path in the records (arrays flattened), with its type – used for suggestions. */
 function listPaths(records, { maxDepth = 6, limit = 2000, scan = 20 } = {}) {
   const out = new Map();
   const walk = (node, prefix, depth) => {
@@ -90,7 +73,6 @@ function listPaths(records, { maxDepth = 6, limit = 2000, scan = 20 } = {}) {
   return [...out.entries()].map(([path, type]) => ({ path, type }));
 }
 
-/** Paths whose last segment looks like `key` – for "did you mean" hints. */
 function suggest(records, key, max = 8) {
   const k = String(key).toLowerCase().replace(/^@/, '');
   if (!k) return [];
@@ -102,48 +84,54 @@ function suggest(records, key, max = 8) {
     .slice(0, max);
 }
 
-/** Collect auto tags from up to `limit` sample records, keeping previous flags and custom tags. */
+function idTagsOf(records, limit = 50) {
+  const found = new Map();
+  const walk = (node, segs) => {
+    if (Array.isArray(node)) return node.slice(0, 200).forEach((el) => walk(el, segs));
+    if (!isObj(node)) return;
+    for (const [k, v] of Object.entries(node)) {
+      const p = [...segs, k];
+      if (isIdPath(k) && isScalar(v) && v !== null) {
+        const path = p.join('.');
+        if (!found.has(path)) found.set(path, { path, level: p.length, type: typeOf(v) });
+      }
+      if (v && typeof v === 'object') walk(v, p);
+    }
+  };
+  for (const rec of records.slice(0, limit)) walk(rec, []);
+  return [...found.values()].sort((a, b) => a.level - b.level);
+}
+
+const configured = (t) => t.custom || t.searchable || t.must || (t.enum && t.enum.length) || (t.unique && !isIdPath(t.path));
+
 function computeTags(records, previous = [], limit = 50) {
   const prev = new Map(previous.map((t) => [t.path, t]));
-  const found = new Map(); // path -> {path, level, type}
-  for (const rec of records.slice(0, limit)) {
-    if (!isObj(rec)) continue;
-    for (const [k, v] of Object.entries(rec)) {
-      if (Array.isArray(v)) continue;
-      if (isScalar(v)) {
-        if (!found.has(k)) found.set(k, { path: k, level: 1, type: typeOf(v) });
-      } else if (isObj(v)) {
-        for (const [k2, v2] of Object.entries(v)) {
-          if (!isScalar(v2)) continue; // excludes arrays (and deeper objects)
-          const p = `${k}.${k2}`;
-          if (!found.has(p)) found.set(p, { path: p, level: 2, type: typeOf(v2) });
-        }
-      }
-    }
-  }
-  const auto = [...found.values()].map((t) => ({
-    ...t,
-    searchable: prev.has(t.path) ? !!prev.get(t.path).searchable : DEFAULT_SEARCHABLE.has(t.path),
-    ...(prev.get(t.path)?.enum ? { enum: prev.get(t.path).enum } : {}),
-    ...(prev.get(t.path)?.unique ? { unique: true, uniqueIn: prev.get(t.path).uniqueIn } : {}),
-  }));
-  // keep custom tags that still exist in the new sample
+  const ids = idTagsOf(records, limit).map((t) => {
+    const p = prev.get(t.path) || {};
+    const { custom: _c, autoAdded: _a, ...rest } = p;
+    return {
+      ...rest,
+      ...t,
+      searchable: p.searchable !== undefined ? !!p.searchable : t.path === 'id',
+      create: p.create !== undefined ? !!p.create : t.path === 'id',
+    };
+  });
+  const idSet = new Set(ids.map((t) => t.path));
   const kept = [];
   const dropped = [];
   for (const t of previous) {
-    if (!t.custom || found.has(t.path)) continue;
+    if (idSet.has(t.path)) continue;
+    if (isIdPath(t.path) || !configured(t)) {
+      if (t.custom || isIdPath(t.path)) dropped.push(t.path);
+      continue;
+    }
     const info = inspectPath(records, t.path);
     if (info.found && info.types.length) kept.push(t);
     else dropped.push(t.path);
   }
-  return { tags: withIdUnique([...auto, ...kept]), dropped };
+  return { tags: withIdUnique([...ids, ...kept]), dropped };
 }
 
-/**
- * Validate tags against the sample. Returns [{path, ok, reason?, actualTypes?, suggestions?}]
- * A tag is valid when its path exists in the sample, ends on a value (not an object/array of
- * objects), and its declared type matches the type found in the sample.
- */
 function validateTags(records, tags) {
   return tags.map((t) => {
     const path = normalizePath(t.path);
@@ -165,11 +153,6 @@ function validateTags(records, tags) {
   });
 }
 
-/**
- * The list a field belongs to: for "agreementItem.productOfferingPrice.name" the items of
- * "agreementItem.productOfferingPrice". Returns {listPath, itemsHaveId, idKey} (listPath null when the
- * field is not directly inside list items).
- */
 function listContainer(records, path) {
   const segs = splitPath(path);
   if (segs.length < 2) return { listPath: null, itemsHaveId: false };
@@ -191,7 +174,6 @@ function listContainer(records, path) {
   return { listPath: prefix.join('.'), itemsHaveId: !!idKey, idKey };
 }
 
-/** Values of a unique field that occur more than once inside the same list instance. */
 function duplicateKeys(records, listPath, field) {
   const dups = new Set();
   const walk = (node, segs) => {
@@ -214,16 +196,13 @@ function duplicateKeys(records, listPath, field) {
   return [...dups];
 }
 
-/** "id" / "x.id" / "a.b.Id" tags are always unique (the id is the key) – locked on. */
 const isIdPath = (p) => /^id$/i.test(String(p).split('.').pop());
-const withIdUnique = (tags) => tags.map((t) => (isIdPath(t.path) && !t.unique ? { ...t, unique: true } : t));
+const withIdUnique = (tags) => tags.map((t) => (t.path === 'id' && !t.unique ? { ...t, unique: true } : t));
 
-/** NeDB field names cannot contain "." or start with "$"; map a tag path to a safe key. */
 function safeKey(p) {
   return p.replace(/%/g, '%25').replace(/\./g, '%2E').replace(/^\$/, '%24');
 }
 
-/** Lower-cased string values for every searchable tag – stored on the document for fast filtering. */
 function computeIndex(record, tags) {
   const idx = {};
   for (const t of tags) {
@@ -236,7 +215,6 @@ function computeIndex(record, tags) {
   return idx;
 }
 
-/** Root-level scalar fields only – used for list views so huge nested arrays are never sent. */
 function rootSummary(record) {
   const s = {};
   for (const [k, v] of Object.entries(record)) if (isScalar(v)) s[k] = v;

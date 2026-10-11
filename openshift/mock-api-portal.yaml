@@ -1,6 +1,3 @@
-# Mock API Portal on OpenShift – oc apply -f openshift/mock-api-portal.yaml -n <project>
-# Contains: ImageStream, BuildConfig (Docker, binary upload), PVC, Deployment, Service, Route.
-# NeDB is a file database for ONE process: keep replicas at 1 (strategy Recreate).
 apiVersion: image.openshift.io/v1
 kind: ImageStream
 metadata:
@@ -17,16 +14,11 @@ metadata:
   labels: { app: mock-api-portal }
 spec:
   source:
-    type: Binary                      # oc start-build mock-api-portal --from-dir=. --follow
+    type: Binary
   strategy:
     type: Docker
     dockerStrategy:
       dockerfilePath: Dockerfile
-      # buildArgs:                    # offline / mirrored registries:
-      #   - name: NODE_IMAGE
-      #     value: my-registry.local/library/node:22-alpine
-      #   - name: NPM_REGISTRY
-      #     value: https://nexus.local/repository/npm/
   output:
     to:
       kind: ImageStreamTag
@@ -49,7 +41,6 @@ metadata:
   name: mock-api-portal
   labels: { app: mock-api-portal }
   annotations:
-    # redeploy automatically when a new image is pushed to the ImageStream
     image.openshift.io/triggers: >-
       [{"from":{"kind":"ImageStreamTag","name":"mock-api-portal:latest"},"fieldPath":"spec.template.spec.containers[?(@.name==\"app\")].image"}]
 spec:
@@ -71,10 +62,10 @@ spec:
             - name: PORT
               value: "8080"
             - name: DATA_DIR
-              value: /app/server/data
+              value: /data
           volumeMounts:
             - name: data
-              mountPath: /app/server/data
+              mountPath: /data
           readinessProbe:
             httpGet: { path: /health, port: 8080 }
             initialDelaySeconds: 3

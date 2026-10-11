@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 
-/** Small confirmation dialog for destructive actions. `onConfirm` may be async; errors are shown. */
 export default function ConfirmModal({ title, message, confirmLabel = 'Delete', onConfirm, onClose }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');

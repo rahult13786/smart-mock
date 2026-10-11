@@ -1,0 +1,37 @@
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: node
+  labels: { app: mock-api-portal }
+spec:
+  lookupPolicy:
+    local: true
+  tags:
+    - name: 22-alpine
+      from:
+        kind: DockerImage
+        name: docker.io/library/node:22-alpine
+      importPolicy:
+        scheduled: false
+      referencePolicy:
+        type: Local
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: mock-api-portal
+  labels: { app: mock-api-portal }
+spec:
+  source:
+    type: Binary
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+      from:
+        kind: ImageStreamTag
+        name: node:22-alpine
+  output:
+    to:
+      kind: ImageStreamTag
+      name: mock-api-portal:latest

@@ -3,20 +3,17 @@ import { coerce } from '../util/value.js';
 
 const fmt = (v) => (v === null || v === undefined ? '' : String(v));
 
-/** Editable input for a JSON scalar that keeps its type (number / boolean / string / null). */
 export default function ScalarInput({ value, onChange, readOnly, multiline, compact, options }) {
   const [text, setText] = useState(fmt(value));
 
   useEffect(() => {
     if (coerce(text, value) !== value) setText(fmt(value));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 
   if (readOnly) {
     return <span className={`value readonly-value ${compact ? 'compact' : ''}`} title={fmt(value)}>{fmt(value)}</span>;
   }
 
-  // enum field: only the allowed values can be chosen
   if (options && options.length) {
     const key = (v) => JSON.stringify(v ?? null);
     const current = key(value);

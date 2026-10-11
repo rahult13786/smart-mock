@@ -1,23 +1,18 @@
 import { useEffect, useState } from 'react';
 import { RawJsonEditor } from './RawJson.jsx';
-import { getIn, humanize, isObj, toPointer } from '../util/value.js';
+import { getIn, humanize, idFirstEntries, isObj, toPointer } from '../util/value.js';
 import ArrayTable, { Cell } from './ArrayTable.jsx';
 import { useEditor } from './editor.js';
 
 const labelOf = (seg) => (typeof seg === 'number' ? `[${seg}]` : humanize(seg));
 
-/**
- * Popup that shows the object (or list) at the top of `stack` as a key/value list.
- * Nested objects / lists are links that push another level, with a breadcrumb to go back.
- */
 export default function ObjectModal({ stack, onNavigate, onClose }) {
   const { draft, setAt, open, saveAt, copyItem, confirmRemove } = useEditor();
   const path = stack[stack.length - 1];
   const value = getIn(draft, path);
-  const isItem = typeof path[path.length - 1] === 'number'; // an item of a list
+  const isItem = typeof path[path.length - 1] === 'number';
 
   useEffect(() => {
-    // Escape closes the top-most dialog only (copy / raw JSON / add dialogs sit above this one)
     const onKey = (e) => e.key === 'Escape' && !document.querySelector('.modal-backdrop.top') && onClose();
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -65,7 +60,6 @@ export default function ObjectModal({ stack, onNavigate, onClose }) {
   );
 }
 
-/** Body with two tabs: the fields (or list) view, and the raw JSON of the selected node. */
 function ModalBody({ path, value, setAt, open, saveAt }) {
   const [tab, setTab] = useState('fields');
   if (value === undefined) return <div className="modal-body"><p className="muted">This value no longer exists.</p></div>;
@@ -83,7 +77,7 @@ function ModalBody({ path, value, setAt, open, saveAt }) {
       ) : isObj(value) ? (
         <table className="kv editable">
           <tbody>
-            {Object.entries(value).map(([k, v]) => (
+            {idFirstEntries(value).map(([k, v]) => (
               <tr key={k}>
                 <th title={k}>{k}</th>
                 <td>

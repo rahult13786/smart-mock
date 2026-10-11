@@ -1,41 +1,29 @@
-// Storage layer.
-//
-// Optimisation by basePath:
-//   * Each registered API (basePath /api/{name}/{version}) gets its OWN NeDB file
-//     (data/apis/{name}__{version}.db). A request only ever touches the datastore for
-//     its basePath, so one large API never slows down another.
-//   * The registry is held in an in-memory Map keyed by "name__version" -> O(1) lookup
-//     per request instead of a DB query.
-//   * Datastores are opened lazily on first use and cached; files are compacted on an interval.
-//
-// Record documents are stored as:
-//   { _id: <record id>, body: "<JSON string>", idx: { <safePath>: "<lowercased value>" },
-//     summary: { <root scalar fields> }, createdAt, updatedAt }
-// The full record is kept as a string so keys such as "@type" or keys containing "." / "$"
-// (not allowed as NeDB field names) are preserved exactly.
-
 const fs = require('fs');
 const path = require('path');
+
+process.umask(0o002);
+const MODES = { fileMode: 0o664, dirMode: 0o775 };
 const Datastore = require('@seald-io/nedb');
 const { computeIndex, rootSummary } = require('./tags');
 const remote = require('./remote');
 
-// Vercel functions can only write to /tmp (temporary) – see README "Deploy"
 const DATA_DIR = process.env.DATA_DIR || (process.env.VERCEL ? '/tmp/mock-api-data' : path.join(__dirname, '..', 'data'));
 const API_DIR = path.join(DATA_DIR, 'apis');
 const SAMPLE_DIR = path.join(DATA_DIR, 'samples');
+const ADMIN_DIR = path.join(DATA_DIR, 'admin');
+const COLLECTIONS = ['users', 'folders'];
 fs.mkdirSync(API_DIR, { recursive: true });
+fs.mkdirSync(ADMIN_DIR, { recursive: true });
 fs.mkdirSync(SAMPLE_DIR, { recursive: true });
 
-const registryDb = new Datastore({ filename: path.join(DATA_DIR, 'registry.db') });
-const registry = new Map(); // key -> api meta
-const datastores = new Map(); // key -> Promise<Datastore>
+const registryDb = new Datastore({ filename: path.join(DATA_DIR, 'registry.db'), modes: MODES });
+const registry = new Map();
+const datastores = new Map();
 
 const apiKey = (name, version) => `${name}__${version}`;
 
-/* ---- remote sync bookkeeping (only used when remote.enabled) ---- */
-const dirty = { registry: new Set(), deleted: new Set(), samples: new Set(), records: new Map() };
-let tracking = true; // off while loading from the remote store
+const dirty = { registry: new Set(), deleted: new Set(), samples: new Set(), records: new Map(), collections: new Map() };
+let tracking = true;
 let localVersion = null;
 const markRecords = (key, ids) => {
   if (!remote.enabled || !tracking) return;
@@ -44,11 +32,32 @@ const markRecords = (key, ids) => {
 };
 const mark = (set, key) => remote.enabled && tracking && set.add(key);
 
+const TAGS_REV = 7;
+
+function upgrade(api) {
+  const { withIdUnique, isIdPath } = require('./tags');
+  let tags = api.tags || [];
+  if ((api.tagsRev || 0) < TAGS_REV) {
+    tags = tags.map((t) => {
+      if (t.path === 'id' || !isIdPath(t.path) || !t.unique) return t;
+      const { unique: _u, uniqueIn: _ui, ...rest } = t;
+      return rest;
+    });
+  }
+  return { ...api, tags: withIdUnique(tags), tagsRev: TAGS_REV };
+}
+
 async function init() {
   await registryDb.loadDatabaseAsync();
   const all = await registryDb.findAsync({});
-  const { withIdUnique } = require('./tags');
-  for (const api of all) registry.set(api._id, { ...api, tags: withIdUnique(api.tags || []) }); // id tags are always unique
+  for (const raw of all) {
+    const api = upgrade(raw);
+    registry.set(api._id, api);
+    if (raw.tagsRev !== TAGS_REV) {
+      await registryDb.updateAsync({ _id: api._id }, api, {});
+      mark(dirty.registry, api._id);
+    }
+  }
   registryDb.setAutocompactionInterval(60_000);
 }
 
@@ -71,6 +80,7 @@ async function createApi(name, version) {
     basePath: `/api/${name}/${version}`,
     hasSample: false,
     tags: [],
+    tagsRev: TAGS_REV,
     createdAt: now,
     updatedAt: now,
   };
@@ -112,7 +122,7 @@ async function deleteApi(key) {
   return true;
 }
 
-const sampleCache = new Map(); // key -> parsed sample records
+const sampleCache = new Map();
 
 function saveSample(key, sample) {
   fs.writeFileSync(path.join(SAMPLE_DIR, `${key}.json`), JSON.stringify(sample, null, 2));
@@ -120,7 +130,6 @@ function saveSample(key, sample) {
   mark(dirty.samples, key);
 }
 
-/** Records used to validate paths: the saved sample, or (no sample) the first stored records. */
 async function referenceRecords(key) {
   if (!sampleCache.has(key)) {
     const s = readSample(key);
@@ -143,7 +152,7 @@ function readSample(key) {
 function getDatastore(key) {
   if (!datastores.has(key)) {
     const p = (async () => {
-      const ds = new Datastore({ filename: path.join(API_DIR, `${key}.db`) });
+      const ds = new Datastore({ filename: path.join(API_DIR, `${key}.db`), modes: MODES });
       await ds.loadDatabaseAsync();
       await ds.ensureIndexAsync({ fieldName: 'createdAt' });
       ds.setAutocompactionInterval(120_000);
@@ -156,8 +165,32 @@ function getDatastore(key) {
   return datastores.get(key);
 }
 
-/** remember which records a write touched, so flush() can send just those to the remote store */
-function trackWrites(key, ds) {
+const collections = new Map();
+
+function getCollection(name) {
+  if (!COLLECTIONS.includes(name)) throw new Error(`Unknown collection ${name}`);
+  if (!collections.has(name)) {
+    const p = (async () => {
+      const ds = new Datastore({ filename: path.join(ADMIN_DIR, `${name}.db`), modes: MODES });
+      await ds.loadDatabaseAsync();
+      ds.setAutocompactionInterval(120_000);
+      if (remote.enabled) trackWrites(name, ds, markCollection);
+      return ds;
+    })();
+    collections.set(name, p);
+    p.catch(() => collections.delete(name));
+  }
+  return collections.get(name);
+}
+
+function markCollection(name, ids) {
+  if (!remote.enabled || !tracking) return;
+  if (!dirty.collections.has(name)) dirty.collections.set(name, new Set());
+  for (const id of ids) if (typeof id === 'string') dirty.collections.get(name).add(id);
+}
+
+function trackWrites(key, ds, markFn = markRecords) {
+  const markRecords = markFn;
   const hasOps = (u) => u && Object.keys(u).some((x) => x.startsWith('$'));
   const ins = ds.insertAsync.bind(ds);
   const upd = ds.updateAsync.bind(ds);
@@ -169,7 +202,7 @@ function trackWrites(key, ds) {
   };
   ds.updateAsync = async (q, u, o) => {
     const r = await upd(q, u, o);
-    if (!hasOps(u)) markRecords(key, [q && q._id]); // $set idx (re-index) is derived data – not synced
+    if (!hasOps(u)) markRecords(key, [q && q._id]);
     return r;
   };
   ds.removeAsync = async (q, o) => {
@@ -179,9 +212,6 @@ function trackWrites(key, ds) {
   };
 }
 
-/* ---- remote store: push local changes / pull everything ---------------------------------- */
-
-/** send pending changes to the remote store (called at the end of every request) */
 async function flush() {
   if (!remote.enabled) return false;
   const cmds = [];
@@ -200,6 +230,15 @@ async function flush() {
       else cmds.push(['HDEL', remote.k.data(key), id]);
     }
   }
+  for (const [name, ids] of dirty.collections) {
+    const ds = await getCollection(name);
+    for (const id of ids) {
+      const d = await ds.findOneAsync({ _id: id });
+      if (d) cmds.push(['HSET', remote.k.collection(name), id, JSON.stringify(d)]);
+      else cmds.push(['HDEL', remote.k.collection(name), id]);
+    }
+  }
+  dirty.collections.clear();
   dirty.registry.clear();
   dirty.deleted.clear();
   dirty.samples.clear();
@@ -211,7 +250,6 @@ async function flush() {
   return true;
 }
 
-/** replace the local working copy with the remote store's content */
 async function pull() {
   const version = await remote.getVersion();
   tracking = false;
@@ -225,10 +263,9 @@ async function pull() {
     fs.mkdirSync(API_DIR, { recursive: true });
     fs.mkdirSync(SAMPLE_DIR, { recursive: true });
     await registryDb.removeAsync({}, { multi: true });
-    const { withIdUnique } = require('./tags');
     const apis = remote.pairs(await remote.cmd('HGETALL', remote.k.registry)).map(([, v]) => JSON.parse(v));
     for (const raw of apis) {
-      const api = { ...raw, tags: withIdUnique(raw.tags || []) };
+      const api = upgrade(raw);
       await registryDb.insertAsync(api);
       registry.set(api._id, api);
       const [sample, flat] = await remote.pipeline([['GET', remote.k.sample(api._id)], ['HGETALL', remote.k.data(api._id)]]);
@@ -241,6 +278,12 @@ async function pull() {
       const ds = await getDatastore(api._id);
       if (docs.length) await ds.insertAsync(docs);
     }
+    for (const name of COLLECTIONS) {
+      const ds = await getCollection(name);
+      await ds.removeAsync({}, { multi: true });
+      const docs = remote.pairs(await remote.cmd('HGETALL', remote.k.collection(name))).map(([, v]) => JSON.parse(v));
+      if (docs.length) await ds.insertAsync(docs);
+    }
     localVersion = version;
   } finally {
     tracking = true;
@@ -248,7 +291,6 @@ async function pull() {
   return registry.size;
 }
 
-/** reload when another instance changed the data since we last loaded / wrote it */
 async function ensureFresh() {
   if (!remote.enabled) return;
   const v = await remote.getVersion();
@@ -267,7 +309,6 @@ function toDoc(api, record, existing) {
   };
 }
 
-// Per-record lock so concurrent PATCHes on the same id are applied in order.
 const locks = new Map();
 async function withLock(lockKey, fn) {
   const prev = locks.get(lockKey) || Promise.resolve();
@@ -316,6 +357,7 @@ module.exports = {
   readSample,
   referenceRecords,
   getDatastore,
+  getCollection,
   toDoc,
   withLock,
   reindex,

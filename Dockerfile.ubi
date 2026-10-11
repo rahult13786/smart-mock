@@ -1,0 +1,33 @@
+ARG BUILDER_IMAGE=registry.access.redhat.com/ubi9/nodejs-22
+ARG RUNTIME_IMAGE=registry.access.redhat.com/ubi9/nodejs-22-minimal
+
+FROM --platform=${BUILDPLATFORM:-linux/amd64} ${BUILDER_IMAGE} AS build
+ARG NPM_REGISTRY=https://registry.npmjs.org/
+ENV npm_config_registry=${NPM_REGISTRY}
+USER 0
+WORKDIR /app/frontend
+COPY frontend/package*.json ./
+RUN npm ci --include=dev --no-audit --no-fund
+COPY frontend/ ./
+RUN npm run build
+WORKDIR /app/server
+COPY server/package*.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
+COPY server/src ./src
+COPY samples /app/samples
+RUN mkdir -p /app/server/data \
+ && rm -rf /app/frontend/node_modules /app/frontend/src \
+ && chmod -R g=u /app
+
+FROM ${RUNTIME_IMAGE}
+ENV NODE_ENV=production \
+    PORT=8080 \
+    DATA_DIR=/app/server/data
+COPY --from=build --chown=1001:0 /app/server /app/server
+COPY --from=build --chown=1001:0 /app/frontend/dist /app/frontend/dist
+COPY --from=build --chown=1001:0 /app/samples /app/samples
+WORKDIR /app/server
+USER 1001
+EXPOSE 8080
+ENTRYPOINT ["node", "src/index.js"]
+CMD []

@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { admin } from '../api.js';
 
-/** Turn typed text into a value of the tag's type, or throw. */
 function toValue(text, type) {
   const t = text.trim();
   if (!t) throw new Error('Enter a value');
@@ -17,15 +16,11 @@ function toValue(text, type) {
   return text;
 }
 
-/**
- * Define the allowed values (enum) of a tag. Values can be typed or picked from the values already
- * present in the sample / stored records.
- */
 export default function EnumModal({ apiKey, tag, onSave, onClose }) {
   const [values, setValues] = useState(tag.enum || []);
   const [text, setText] = useState('');
   const [error, setError] = useState('');
-  const [found, setFound] = useState(null); // [{value, count}]
+  const [found, setFound] = useState(null);
 
   useEffect(() => {
     const onKey = (e) => e.key === 'Escape' && onClose();
@@ -41,7 +36,6 @@ export default function EnumModal({ apiKey, tag, onSave, onClose }) {
 
   function addTyped() {
     try {
-      // several values at once: one per line or comma separated
       const parts = text.includes('\n') ? text.split('\n') : text.split(',');
       const vals = parts.filter((p) => p.trim()).map((p) => toValue(p.trim(), tag.type));
       const next = [...values];
