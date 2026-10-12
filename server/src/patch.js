@@ -9,7 +9,7 @@ function uniqueKeys(tags = []) {
   const m = new Map();
   for (const t of tags) {
     const field = t.path.split('.').pop();
-    if (t.unique && t.uniqueIn != null && !ID_KEY.test(field)) m.set(t.uniqueIn, field);
+    if (t.unique && t.uniqueIn != null && (!ID_KEY.test(field) || !m.has(t.uniqueIn))) m.set(t.uniqueIn, field);
   }
   return m;
 }
@@ -82,7 +82,35 @@ function resolvePointer(doc, pointer, keys, { insert = false } = {}) {
   return '/' + out.map(esc).join('/');
 }
 
-function mergePatch(target, patch, keys = null, names = [], where = '') {
+function keyMatch(arr, field, value) {
+  if (value === null || value === undefined || typeof value === 'object') return -1;
+  const hits = [];
+  arr.forEach((el, i) => isObj(el) && el[field] !== undefined && el[field] !== null && String(el[field]) === String(value) && hits.push(i));
+  return hits.length === 1 ? hits[0] : hits.length > 1 ? -2 : -1;
+}
+
+function mergeList(target, patch, field, keys, names, where, added) {
+  const out = target.slice();
+  for (const el of patch) {
+    if (el === null || el === undefined) continue;
+    const at = isObj(el) ? keyMatch(out, field, el[field]) : -1;
+    if (at === -2) {
+      throw { status: 409, code: 'AMBIGUOUS_ITEM', message: `"${el[field]}" matches several items by unique key "${field}" in ${where || '/'}` };
+    }
+    if (at >= 0) {
+      out[at] = mergePatch(out[at], el, keys, names, `${where}/${at}`, added);
+      continue;
+    }
+    out.push(isObj(el) ? mergePatch({}, el, null, names, `${where}/${out.length}`) : el);
+    if (added) added.push({ pointer: `${where}/${out.length - 1}`, listPath: names.join('.') });
+  }
+  return out;
+}
+
+function mergePatch(target, patch, keys = null, names = [], where = '', added = null) {
+  if (Array.isArray(patch) && Array.isArray(target) && keys && keys.has(names.join('.'))) {
+    return mergeList(target, patch, keys.get(names.join('.')), keys, names, where, added);
+  }
   if (!isObj(patch)) return patch;
   if (Array.isArray(target) && keys) {
     const out = target.slice();
@@ -93,7 +121,7 @@ function mergePatch(target, patch, keys = null, names = [], where = '') {
         throw { status: 422, code: 'ITEM_NOT_FOUND', message: `No item "${k}" in ${where || '/'} – looked up by id, unique key and index` };
       }
       if (v === null) removals.push(hit.index);
-      else out[hit.index] = mergePatch(out[hit.index], v, keys, names, `${where}/${hit.index}`);
+      else out[hit.index] = mergePatch(out[hit.index], v, keys, names, `${where}/${hit.index}`, added);
     }
     removals.sort((a, b) => b - a).forEach((i) => out.splice(i, 1));
     return out;
@@ -101,7 +129,7 @@ function mergePatch(target, patch, keys = null, names = [], where = '') {
   const out = isObj(target) ? { ...target } : {};
   for (const [k, v] of Object.entries(patch)) {
     if (v === null) delete out[k];
-    else out[k] = mergePatch(out[k], v, keys, [...names, k], `${where}/${esc(k)}`);
+    else out[k] = mergePatch(out[k], v, keys, [...names, k], `${where}/${esc(k)}`, added);
   }
   return out;
 }
@@ -157,7 +185,18 @@ function applyPatch(record, body, mode, keys = null, onAdd = null) {
     return { doc, resolved };
   }
   if (!isObj(body)) throw { status: 400, message: 'Merge Patch body must be a JSON object' };
-  return { doc: mergePatch(record, body, keys), resolved: [] };
+  const added = [];
+  let doc = mergePatch(record, body, keys, [], '', added);
+  if (onAdd) {
+    for (const a of added) {
+      const segs = a.pointer.split('/').slice(1).map(unesc);
+      const index = Number(segs.pop());
+      let list = doc;
+      for (const seg of segs) list = list[Array.isArray(list) ? Number(seg) : seg];
+      list[index] = onAdd({ op: 'add', path: a.pointer, value: list[index] }, doc);
+    }
+  }
+  return { doc, resolved: [], added: added.map((a) => a.pointer) };
 }
 
 module.exports = { mergePatch, detectMode, applyPatch, resolvePointer, uniqueKeys, findItem };

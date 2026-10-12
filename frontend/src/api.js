@@ -1,7 +1,30 @@
+const TOKEN_KEY = 'mock-portal-token';
+let token = (() => {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || '';
+  } catch {
+    return '';
+  }
+})();
+
+export const getToken = () => token;
+export function setToken(t) {
+  token = t || '';
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    return;
+  }
+}
+
 async function request(method, url, body, contentType = 'application/json') {
+  const headers = {};
+  if (body !== undefined) headers['Content-Type'] = contentType;
+  if (token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(url, {
     method,
-    headers: body !== undefined ? { 'Content-Type': contentType } : undefined,
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
@@ -16,6 +39,9 @@ async function request(method, url, body, contentType = 'application/json') {
     const err = new Error(msg);
     err.status = res.status;
     err.data = data;
+    if (res.status === 401 && url.startsWith('/admin/') && !url.startsWith('/admin/auth/login')) {
+      window.dispatchEvent(new Event('portal-logged-out'));
+    }
     throw err;
   }
   return data;
@@ -26,7 +52,8 @@ const enc = encodeURIComponent;
 export const admin = {
   list: () => request('GET', '/admin/apis'),
   get: (key) => request('GET', `/admin/apis/${enc(key)}`),
-  create: (name, version) => request('POST', '/admin/apis', { name, version }),
+  create: (body) => request('POST', '/admin/apis', body),
+  update: (key, body) => request('PATCH', `/admin/apis/${enc(key)}`, body),
   sample: (key) => request('GET', `/admin/apis/${enc(key)}/sample`),
   saveSample: (key, sample, seed = true) => request('PUT', `/admin/apis/${enc(key)}/sample`, { sample, seed }),
   saveTags: (key, tags) => request('PUT', `/admin/apis/${enc(key)}/tags`, { tags }),
@@ -41,7 +68,15 @@ export const admin = {
   remove: (key) => request('DELETE', `/admin/apis/${enc(key)}`),
 };
 
+export const auth = {
+  login: (email, password) => request('POST', '/admin/auth/login', { email, password }),
+  me: () => request('GET', '/admin/auth/me'),
+  logout: () => request('POST', '/admin/auth/logout'),
+  options: () => request('GET', '/admin/auth/options'),
+};
+
 export const accounts = {
+  userOptions: () => request('GET', '/admin/users/options'),
   users: () => request('GET', '/admin/users'),
   newPassword: () => request('GET', '/admin/users/password'),
   password: (id) => request('GET', `/admin/users/${enc(id)}/password`),

@@ -1,0 +1,82 @@
+{
+  "agreementItem": [
+    {
+      "product": [
+        {
+          "id": "3-5TGLGY"
+        }
+      ],
+      "productOffering": [
+        {
+          "id": "3-5TGLGY",
+          "name": "IP"
+        },
+        {
+          "name": "SmartpartNumber"
+        }
+      ],
+      "termOrCondition": [
+        {
+          "validFor": {
+            "startDateTime": "06/10/2026 00:00:00",
+            "endDateTime": "07/11/2026 23:59:59"
+          }
+        }
+      ],
+      "characteristic": [
+        {
+          "name": "Validity Start Date",
+          "value": "06/10/2026 00:00:00"
+        },
+        {
+          "name": "Validity End Date",
+          "value": "07/11/2026 23:59:59"
+        },
+        {
+          "name": "Created",
+          "value": "06/10/2026 17:17:00"
+        },
+        {
+          "name": "Status",
+          "value": "Awaiting approval"
+        },
+        {
+          "name": "discountPercentage",
+          "value": "0.00"
+        },
+        {
+          "name": "applyPenalty",
+          "value": "Y"
+        },
+        {
+          "name": "productKey",
+          "value": "3-5TGLGY"
+        },
+        {
+          "name": "interactionCode",
+          "value": "Add"
+        },
+        {
+          "name": "Family Type Code",
+          "value": "Data"
+        },
+        {
+          "name": "Product Line Category",
+          "value": "Data Circuit"
+        }
+      ],
+      "relatedEntity": [
+        {
+          "id": "MSA-117198-061026-1-1",
+          "role": "Parent agreement item",
+          "@referredType": "Parent agreement item"
+        },
+        {
+          "id": "MSA-117198-061026-1-2",
+          "role": "Previous version item ID",
+          "@referredType": "Previous version item ID"
+        }
+      ]
+    }
+  ]
+}

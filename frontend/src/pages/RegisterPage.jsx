@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { admin } from '../api.js';
+import { admin, auth } from '../api.js';
 import { useApis } from '../App.jsx';
 import { nextVersion } from '../util/value.js';
 import EnumModal from '../components/EnumModal.jsx';
@@ -26,19 +26,38 @@ function EnumCell({ tag, onEdit }) {
 
 const TAG_TYPES = ['string', 'number', 'boolean'];
 
+const ENV_TABS = [
+  ['dev', 'Dev'],
+  ['st', 'ST'],
+  ['sit', 'SIT'],
+];
+const SCOPE_FIELDS = [
+  ['domain', 'Domain'],
+  ['team', 'Team'],
+  ['technology', 'Technology'],
+  ['role', 'Role'],
+];
+const envOf = (a) => a.env || (a.group ? a.group.split('-').pop() : 'other');
+const emptyScope = { domain: '', team: '', technology: '', role: '' };
+
 export default function RegisterPage() {
-  const { apis, refresh } = useApis();
+  const { apis, refresh, user } = useApis();
   const [params, setParams] = useSearchParams();
   const selected = params.get('api');
+  const tab = params.get('env') || 'dev';
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState('');
   const [version, setVersion] = useState('v1');
+  const [env, setEnv] = useState(tab);
+  const [scope, setScope] = useState(emptyScope);
+  const [options, setOptions] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [versionOf, setVersionOf] = useState(null);
   const [prefill, setPrefill] = useState(null);
 
-  const select = (key) => setParams(key ? { api: key } : {});
+  const go = (nextEnv, key) => setParams({ env: nextEnv, ...(key ? { api: key } : {}) });
+  const select = (key) => go(tab, key);
 
   useEffect(() => {
     refresh();
@@ -51,10 +70,33 @@ export default function RegisterPage() {
     };
   }, [refresh]);
 
+  useEffect(() => {
+    if (user?.isAdmin && adding && !options) auth.options().then(setOptions).catch((e) => setError(e.message));
+  }, [user, adding, options]);
+
+  useEffect(() => {
+    const a = selected && apis.find((x) => x._id === selected);
+    if (a && envOf(a) !== tab) go(envOf(a), a._id);
+  }, [selected, apis]);
+
+  const tabs = useMemo(() => {
+    const list = ENV_TABS.map(([k, label]) => ({ key: k, label, count: apis.filter((a) => envOf(a) === k).length }));
+    const other = apis.filter((a) => envOf(a) === 'other').length;
+    return other ? [...list, { key: 'other', label: 'Other', count: other }] : list;
+  }, [apis]);
+  const shown = apis.filter((a) => envOf(a) === tab);
+
+  function openForm() {
+    setEnv(ENV_TABS.some(([k]) => k === tab) ? tab : 'dev');
+    setAdding(true);
+  }
+
   function startNewVersion(api, note) {
     setVersionOf(api);
     setName(api.name);
-    setVersion(nextVersion(api.version, apis.filter((a) => a.name === api.name).map((a) => a.version)));
+    setVersion(nextVersion(api.version, apis.filter((a) => a.name === api.name && (a.group || '') === (api.group || '')).map((a) => a.version)));
+    if (api.env) setEnv(api.env);
+    if (user?.isAdmin && api.group) setScope({ domain: api.domain, team: api.team, technology: api.technology, role: api.role });
     setError('');
     setAdding(true);
     setPrefill({ from: api._id, note });
@@ -66,20 +108,28 @@ export default function RegisterPage() {
     setVersionOf(null);
     setName('');
     setVersion('v1');
+    setScope(emptyScope);
     setError('');
   }
 
+  const prefix = user?.isAdmin ? SCOPE_FIELDS.map(([k]) => scope[k] || '…').join('-') : user?.scope || '';
+  const group = `${prefix}-${env}`;
+
   async function create(e) {
     e.preventDefault();
+    if (user?.isAdmin) {
+      const missing = SCOPE_FIELDS.filter(([k]) => !scope[k]).map(([, l]) => l);
+      if (missing.length) return setError(`Choose ${missing.join(', ')}`);
+    }
     setBusy(true);
     setError('');
     try {
-      const api = await admin.create(name, version);
+      const api = await admin.create({ name, version, env, ...(user?.isAdmin ? scope : {}) });
       await refresh();
       if (versionOf && prefill) setPrefill({ ...prefill, key: api._id });
       else setPrefill(null);
       closeForm();
-      select(api._id);
+      go(api.env || env, api._id);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -93,10 +143,11 @@ export default function RegisterPage() {
         <div>
           <h1>Register API</h1>
           <p className="muted">
-            Each API gets its own base path <code>/api/{'{name}'}/{'{version}'}</code> and its own NeDB data file.
+            Each API gets its own path <code>/api/{'{domain}-{team}-{technology}-{role}-{env}'}/{'{name}'}/{'{version}'}</code> and
+            its own NeDB data file.
           </p>
         </div>
-        <button className="btn primary round" title="Add API" onClick={() => (adding ? closeForm() : setAdding(true))}>
+        <button className="btn primary round" title="Add API" onClick={() => (adding ? closeForm() : openForm())}>
           {adding ? '×' : '+'}
         </button>
       </div>
@@ -109,6 +160,29 @@ export default function RegisterPage() {
               version so you can extend it.
             </div>
           )}
+          <label className="wide">
+            Base path
+            {user?.isAdmin ? (
+              <div className="scope-selects">
+                {SCOPE_FIELDS.map(([k, label]) => (
+                  <select key={k} value={scope[k]} disabled={!!versionOf} onChange={(e) => setScope({ ...scope, [k]: e.target.value })}>
+                    <option value="">{label}…</option>
+                    {(options?.[k] || []).map((o) => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                ))}
+                <select value={env} disabled={!!versionOf} onChange={(e) => setEnv(e.target.value)}>
+                  {ENV_TABS.map(([k]) => <option key={k} value={k}>{k}</option>)}
+                </select>
+              </div>
+            ) : (
+              <div className="base-path">
+                <span className="prefix" title="From your user – read only">{prefix}-</span>
+                <select value={env} disabled={!!versionOf} onChange={(e) => setEnv(e.target.value)} aria-label="Env">
+                  {ENV_TABS.map(([k]) => <option key={k} value={k}>{k}</option>)}
+                </select>
+              </div>
+            )}
+          </label>
           <label>
             Name
             <input
@@ -118,7 +192,7 @@ export default function RegisterPage() {
               readOnly={!!versionOf}
               className={versionOf ? 'readonly' : ''}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. agreement"
+              placeholder="e.g. sampleapi"
             />
           </label>
           <label>
@@ -128,15 +202,28 @@ export default function RegisterPage() {
           <button className="btn primary" disabled={busy}>
             {busy ? 'Creating…' : 'Create'}
           </button>
+          <div className="path-preview wide">
+            API path <code>/api/{group}/{name.trim().toLowerCase() || '{name}'}/{version.trim() || '{version}'}</code>
+          </div>
           {error && <div className="alert error wide">{error}</div>}
         </form>
       )}
 
+      <div className="env-tabs" role="tablist">
+        {tabs.map((t) => (
+          <button key={t.key} role="tab" className={tab === t.key ? 'on' : ''} onClick={() => go(t.key)}>
+            {t.label} <span className="count">{t.count}</span>
+          </button>
+        ))}
+      </div>
+
       <div className="api-list">
-        {apis.length === 0 && !adding && (
-          <div className="empty card">No APIs yet. Click <b>+</b> to register your first API.</div>
+        {shown.length === 0 && !adding && (
+          <div className="empty card">
+            No {tabs.find((t) => t.key === tab)?.label || tab} APIs{user?.isAdmin ? '' : ` for ${user?.scope}`} yet. Click <b>+</b> to register one.
+          </div>
         )}
-        {apis.map((a) => (
+        {shown.map((a) => (
           <ApiPanel
             key={a._id}
             api={a}
@@ -169,6 +256,17 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
   const [regexEdit, setRegexEdit] = useState(null);
   const [mapEdit, setMapEdit] = useState(null);
   const sampleRef = useRef(null);
+  const [maxRecords, setMaxRecords] = useState(api.maxRecords ?? 10);
+  useEffect(() => setMaxRecords(api.maxRecords ?? 10), [api.maxRecords]);
+
+  function saveMaxRecords() {
+    const n = Number(maxRecords);
+    if (!Number.isInteger(n) || n < 1) return setMsg({ type: 'error', text: '# Records must be a whole number of 1 or more' });
+    run(async () => {
+      await admin.update(api._id, { maxRecords: n });
+      return `# Records set to ${n} – POST requests beyond ${n} stored records are rejected.`;
+    }, 'Saved');
+  }
 
   const syncedTags = useRef(api.tags);
   const tagsRef = useRef(tags);
@@ -365,7 +463,7 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
 
       {open && (
         <div className="api-body">
-          <div className="grid2">
+          <div className="grid3">
             <label>
               Name
               <input value={api.name} readOnly className="readonly" />
@@ -373,6 +471,19 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
             <label>
               Version
               <input value={api.version} readOnly className="readonly" />
+            </label>
+            <label>
+              # Records <span className="muted small">{api.recordCount ?? 0} stored</span>
+              <div className="records-limit">
+                <input
+                  type="number"
+                  min="1"
+                  value={maxRecords}
+                  onChange={(e) => setMaxRecords(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && saveMaxRecords()}
+                />
+                <button className="btn small" disabled={busy || String(maxRecords) === String(api.maxRecords)} onClick={saveMaxRecords}>Save</button>
+              </div>
             </label>
           </div>
 

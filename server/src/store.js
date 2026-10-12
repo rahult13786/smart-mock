@@ -11,7 +11,8 @@ const DATA_DIR = process.env.DATA_DIR || (process.env.VERCEL ? '/tmp/mock-api-da
 const API_DIR = path.join(DATA_DIR, 'apis');
 const SAMPLE_DIR = path.join(DATA_DIR, 'samples');
 const ADMIN_DIR = path.join(DATA_DIR, 'admin');
-const COLLECTIONS = ['users', 'folders'];
+const COLLECTIONS = ['users', 'folders', 'sessions'];
+const DEFAULT_MAX_RECORDS = 10;
 fs.mkdirSync(API_DIR, { recursive: true });
 fs.mkdirSync(ADMIN_DIR, { recursive: true });
 fs.mkdirSync(SAMPLE_DIR, { recursive: true });
@@ -20,7 +21,7 @@ const registryDb = new Datastore({ filename: path.join(DATA_DIR, 'registry.db'),
 const registry = new Map();
 const datastores = new Map();
 
-const apiKey = (name, version) => `${name}__${version}`;
+const apiKey = (name, version, group) => (group ? `${group}__${name}__${version}` : `${name}__${version}`);
 
 const dirty = { registry: new Set(), deleted: new Set(), samples: new Set(), records: new Map(), collections: new Map() };
 let tracking = true;
@@ -44,7 +45,8 @@ function upgrade(api) {
       return rest;
     });
   }
-  return { ...api, tags: withIdUnique(tags), tagsRev: TAGS_REV };
+  const maxRecords = Number.isInteger(api.maxRecords) && api.maxRecords > 0 ? api.maxRecords : DEFAULT_MAX_RECORDS;
+  return { ...api, tags: withIdUnique(tags), tagsRev: TAGS_REV, maxRecords };
 }
 
 async function init() {
@@ -53,7 +55,7 @@ async function init() {
   for (const raw of all) {
     const api = upgrade(raw);
     registry.set(api._id, api);
-    if (raw.tagsRev !== TAGS_REV) {
+    if (raw.tagsRev !== TAGS_REV || raw.maxRecords !== api.maxRecords) {
       await registryDb.updateAsync({ _id: api._id }, api, {});
       mark(dirty.registry, api._id);
     }
@@ -69,15 +71,18 @@ function getApi(key) {
   return registry.get(key) || null;
 }
 
-async function createApi(name, version) {
-  const key = apiKey(name, version);
+async function createApi(name, version, scope = null) {
+  const group = scope ? scope.group : null;
+  const key = apiKey(name, version, group);
   if (registry.has(key)) return null;
   const now = new Date().toISOString();
   const api = {
     _id: key,
     name,
     version,
-    basePath: `/api/${name}/${version}`,
+    ...(scope ? { group, domain: scope.domain, team: scope.team, technology: scope.technology, role: scope.role, env: scope.env } : {}),
+    basePath: group ? `/api/${group}/${name}/${version}` : `/api/${name}/${version}`,
+    maxRecords: DEFAULT_MAX_RECORDS,
     hasSample: false,
     tags: [],
     tagsRev: TAGS_REV,
@@ -341,6 +346,7 @@ async function countRecords(key) {
 }
 
 module.exports = {
+  DEFAULT_MAX_RECORDS,
   init,
   flush,
   pull,

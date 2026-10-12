@@ -3,6 +3,87 @@
 Each section lists the files inside `mock-api-portal-<version>.tar.gz` (top folder `mock-api-portal/`) that
 changed compared with the previous package. `node_modules` is summarised by package.
 
+## Modification in round 10
+
+Package **mock-api-portal-1.10.0.tar.gz**, compared with **mock-api-portal-1.9.0.tar.gz**.
+
+### Changes in this round
+
+1. **Merge Patch – arrays with a unique key.** When a list's item key is marked *Unique* (e.g. `agreementItem.id`),
+   an array sent in a merge patch no longer replaces the list: items whose key matches are merged into the existing
+   item, items without the key (or with an unknown key) are appended as new items, and for every new item the
+   *Create (post)* (ids, regex, missing values), *Map* and *Must* rules run, as for POST / JSON Patch `op: add`.
+   Lists without a unique key and `?pathMode=index` keep RFC 7396 behaviour.
+2. **PATCH `?fields=`** – the response contains only the given paths (`id` always included); without `fields` the
+   full stored record is returned.
+3. **HEAD** on `/api/{basePath}/{name}/{version}` and `/{id}` – status, `Content-Type` and `Content-Length` of the
+   GET response, no body.
+4. **Users** get Domain (fixedline, gsm), Team (bau, project), Technology (ms, esb, portal) and Role (dev, test) –
+   required on create, editable, shown in the list.
+5. **Login page** (email + password); all portal pages and `/admin/*` endpoints need a login (Bearer token,
+   sessions stored in NeDB). Built-in `smadmin` / `smadmin` (password configurable with `SMADMIN_PASSWORD`).
+   *Admin view* (users, folders) is shown to and allowed for smadmin only. Registered users log in with their
+   email and generated password; inactive users cannot log in.
+6. **Register API with a base path from the user** – `+` shows `{domain}-{team}-{technology}-{role}-` read-only and
+   an env drop-down (dev, st, sit) (smadmin chooses all parts). APIs are stored under the key
+   `{basePath}__{name}__{version}` and served at `/api/{domain}-{team}-{technology}-{role}-{env}/{name}/{version}`;
+   base path + name + version is unique. New **# Records** field (default 10, editable next to *Version*): POST and
+   *Create mocks* are refused with `422 RECORD_LIMIT_REACHED` when the limit is reached.
+7. **Register page tabs** Dev / ST / SIT list the APIs the user can access (`{scope}-dev/st/sit`); smadmin sees all
+   APIs (APIs registered before 1.10.0 appear under *Other*).
+
+### Added
+
+| File | Why |
+|---|---|
+| `frontend/dist/assets/index-xwZ1TNsT.js` | rebuilt portal: login page, env tabs, base path, # Records, user fields (replaces `index-DYpTR2x8.js`) |
+| `frontend/dist/assets/index-kEBL_2NK.css` | rebuilt portal styles (replaces `index-E-mO4X7X.css`) |
+
+### Modified
+
+| File | Why |
+|---|---|
+| `server/src/patch.js` | merge patch: arrays with a unique key are merged by key, new items appended and reported for generation |
+| `server/src/index.js` | login-protected `/admin`, API access by user scope, base-path registration, `PATCH /admin/apis/{key}` (# records), record limit on POST / mocks, `/api/{basePath}/{name}/{version}` routing (old paths still work), HEAD, PATCH `fields`, new-item rules for merge patch, `SEED_APIS` with a base path |
+| `server/src/accounts.js` | login / logout / me, sessions, `smadmin`, user Domain / Team / Technology / Role, access rules |
+| `server/src/store.js` | API key with base path, `maxRecords` (default 10, also set on existing APIs), `admin/sessions.db` collection |
+| `server/package.json` | version 1.10.0 |
+| `server/package-lock.json` | version 1.10.0 |
+| `frontend/dist/index.html` | references the rebuilt assets |
+| `DEPLOY.md` | version 1.10.0, smadmin login, `SMADMIN_PASSWORD` / `SESSION_HOURS` |
+| `build-info.json` | version 1.10.0, build time |
+| `change.md` | this section |
+
+### Removed
+
+| File | Why |
+|---|---|
+| `frontend/dist/assets/index-DYpTR2x8.js` | replaced by the rebuilt portal |
+| `frontend/dist/assets/index-E-mO4X7X.css` | replaced by the rebuilt portal |
+
+### Unchanged
+
+`start.sh`, `openshift/*`, `samples/agreement.json`, `server/data/`,
+`server/src/{generate,remote,tags,enums,mockgen,query}.js`, `server/node_modules` (no new packages).
+
+### Upgrade notes
+
+* After the upgrade every portal page asks for a login – sign in with `smadmin` / `smadmin`, then change it with
+  `SMADMIN_PASSWORD`. Mock data URLs (`/api/...`) stay open for clients.
+* Users created before 1.10.0 have no Domain / Team / Technology / Role: they can log in but see no APIs until
+  smadmin edits them.
+* APIs registered before 1.10.0 keep their `/api/{name}/{version}` URL and are visible to smadmin (tab *Other*).
+* Existing APIs get *# records* = 10; raise it in the API section if they already hold more records.
+
+### Files next to the .tar
+
+| File | Change |
+|---|---|
+| `Dockerfile` | `PACKAGE` points to `mock-api-portal-1.10.0.tar.gz` |
+| `DEPLOY.md` | version 1.10.0, smadmin login, new settings |
+| `mock-api-portal-1.10.0.tar.gz.sha256` | new checksum |
+| `change.md` | round 10 section added |
+
 ## Modification in round 9
 
 Package **mock-api-portal-1.9.0.tar.gz**, compared with **mock-api-portal-1.8.0.tar.gz**.

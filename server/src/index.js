@@ -83,13 +83,35 @@ const admin = express.Router();
 
 admin.get(
   '/apis',
-  wrap(async (_req, res) => {
+  wrap(async (req, res) => {
     const list = await Promise.all(
-      store.listApis().map(async (a) => ({ ...a, recordCount: await store.countRecords(a._id) }))
+      store
+        .listApis()
+        .filter((a) => accounts.canAccess(req.user, a))
+        .map(async (a) => ({ ...a, recordCount: await store.countRecords(a._id) }))
     );
     res.json(list);
   })
 );
+
+function scopeFor(user, body) {
+  const env = String(body?.env || '').trim().toLowerCase();
+  if (!accounts.ENVS.includes(env)) throw { status: 400, code: 'INVALID_ENV', message: `env must be one of ${accounts.ENVS.join(', ')}` };
+  const scope = { env };
+  for (const k of Object.keys(accounts.USER_OPTIONS)) {
+    const v = user.isAdmin ? String(body?.[k] || '').trim().toLowerCase() : user[k];
+    if (!accounts.USER_OPTIONS[k].includes(v)) {
+      throw {
+        status: 400,
+        code: 'INVALID_SCOPE',
+        message: user.isAdmin ? `${k} must be one of ${accounts.USER_OPTIONS[k].join(', ')}` : `Your user has no valid ${k} – ask smadmin to update your user`,
+      };
+    }
+    scope[k] = v;
+  }
+  scope.group = ['domain', 'team', 'technology', 'role', 'env'].map((k) => scope[k]).join('-');
+  return scope;
+}
 
 admin.post(
   '/apis',
@@ -98,8 +120,9 @@ admin.post(
     const version = String(req.body?.version || '').trim();
     if (!SLUG.test(name)) return res.status(400).json({ error: 'name is required (letters, digits, - or _)' });
     if (!VERSION.test(version)) return res.status(400).json({ error: 'version is required, e.g. v1 or 1.0' });
-    const api = await store.createApi(name, version);
-    if (!api) return res.status(409).json({ error: `API ${name}/${version} is already registered` });
+    const scope = scopeFor(req.user, req.body);
+    const api = await store.createApi(name, version, scope);
+    if (!api) return res.status(409).json({ error: `API ${scope.group}/${name}/${version} is already registered`, code: 'API_EXISTS' });
     res.status(201).json(api);
   })
 );
@@ -107,6 +130,10 @@ admin.post(
 const findApi = (req, res) => {
   const api = store.getApi(req.params.key);
   if (!api) res.status(404).json({ error: 'API not registered' });
+  else if (!accounts.canAccess(req.user, api)) {
+    res.status(403).json({ error: 'You do not have access to this API', code: 'NO_ACCESS' });
+    return null;
+  }
   return api;
 };
 
@@ -115,6 +142,20 @@ admin.get(
   wrap(async (req, res) => {
     const api = findApi(req, res);
     if (api) res.json({ ...api, recordCount: await store.countRecords(api._id) });
+  })
+);
+
+admin.patch(
+  '/apis/:key',
+  wrap(async (req, res) => {
+    const api = findApi(req, res);
+    if (!api) return;
+    const max = Number(req.body?.maxRecords);
+    if (!Number.isInteger(max) || max < 1 || max > 100000) {
+      throw { status: 400, code: 'INVALID_MAX_RECORDS', message: '# records must be a whole number between 1 and 100000' };
+    }
+    const updated = await store.updateApi(api._id, { maxRecords: max });
+    res.json({ ...updated, recordCount: await store.countRecords(api._id) });
   })
 );
 
@@ -227,6 +268,8 @@ admin.post(
     const template = await mockTemplate(api, req.body?.source);
     const ds = await store.getDatastore(api._id);
     const existing = new Set((await ds.findAsync({}, { _id: 1 })).map((d) => d._id));
+    const wanted = Number(req.body?.count) || 0;
+    if (existing.size + wanted > api.maxRecords) throw limitError(api, existing.size, wanted);
     const { records, warnings } = buildMocks(template, req.body || {}, api.tags, existing);
     records.forEach((r, i) => {
       const bad = enumViolations(r, api.tags, template);
@@ -431,33 +474,71 @@ admin.put(
 admin.delete(
   '/apis/:key',
   wrap(async (req, res) => {
-    if (!(await store.deleteApi(req.params.key))) return res.status(404).json({ error: 'API not registered' });
+    if (!findApi(req, res)) return;
+    await store.deleteApi(req.params.key);
     res.status(204).end();
   })
 );
 
+app.use('/admin', accounts.authRouter);
+app.use('/admin', accounts.authenticate);
+app.use(['/admin/users', '/admin/folders'], accounts.requireAdmin);
 app.use('/admin', accounts.router);
 app.use('/admin', admin);
 
 const data = express.Router({ mergeParams: true });
 
+function resolveApi(segs) {
+  const dec = segs.map((x) => {
+    try {
+      return decodeURIComponent(x);
+    } catch {
+      return x;
+    }
+  });
+  if (dec.length >= 3) {
+    const api = store.getApi(store.apiKey(slugify(dec[1]), dec[2], dec[0].toLowerCase()));
+    if (api) return { api, used: 3 };
+  }
+  if (dec.length >= 2) {
+    const api = store.getApi(store.apiKey(slugify(dec[0]), dec[1]));
+    if (api) return { api, used: 2 };
+  }
+  return null;
+}
+
 app.use(
-  ['/api/:name/:version', '/apis/:name/:version'],
+  ['/api', '/apis'],
   wrap(async (req, res, next) => {
-    const api = store.getApi(store.apiKey(slugify(req.params.name), req.params.version));
-    if (!api) {
+    const q = req.url.indexOf('?');
+    const pathPart = q === -1 ? req.url : req.url.slice(0, q);
+    const search = q === -1 ? '' : req.url.slice(q);
+    const segs = pathPart.split('/').filter(Boolean);
+    if (segs.length < 2) return next();
+    const hit = resolveApi(segs);
+    if (!hit) {
       return res.status(404).json({
         error: 'API not registered',
-        basePath: `/api/${req.params.name}/${req.params.version}`,
+        path: `${req.baseUrl}${pathPart}`,
         registered: store.listApis().map((a) => a.basePath),
       });
     }
-    req.mockApi = api;
-    req.ds = await store.getDatastore(api._id);
-    next();
-  }),
-  data
+    req.mockApi = hit.api;
+    req.ds = await store.getDatastore(hit.api._id);
+    req.url = `/${segs.slice(hit.used).join('/')}${search}`;
+    data(req, res, next);
+  })
 );
+
+function limitError(api, count, adding) {
+  return {
+    status: 422,
+    code: 'RECORD_LIMIT_REACHED',
+    message: `${api.basePath} has reached its limit of ${api.maxRecords} records (${count} stored${adding > 1 ? `, ${adding} more requested` : ''}) – raise "# records" in the API configuration or delete records`,
+    limit: api.maxRecords,
+    count,
+  };
+}
 
 const RESERVED = new Set(['view', 'limit', 'skip', 'offset', 'q', 'mode', 'sort', 'fields', 'pathMode', 'generate']);
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -540,9 +621,7 @@ const sendRecords = (res, bodies, fields) => {
   res.json(bodies.map((b) => project(JSON.parse(b), fields)));
 };
 
-data.get(
-  '/',
-  wrap(async (req, res) => {
+const listRecords = wrap(async (req, res) => {
     const { query: q, ids, changed } = await buildQuery(req.mockApi, req.query);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 0, 0), 1000);
     const skip = Math.max(parseInt(req.query.offset ?? req.query.skip, 10) || 0, 0);
@@ -590,19 +669,20 @@ data.get(
     if (changed.length) res.set('X-Search-Config-Updated', changed.join(','));
     if (summary) return res.json({ total, items: docs.map((d) => ({ ...d.summary, _updatedAt: d.updatedAt })), searchConfigUpdated: changed.length ? changed : undefined });
     sendRecords(res, docs.map((d) => d.body), fields);
-  })
-);
+});
 
-data.get(
-  '/:id',
-  wrap(async (req, res) => {
-    const doc = await req.ds.findOneAsync({ _id: req.params.id });
-    if (!doc) return res.status(404).json({ error: `Record ${req.params.id} not found` });
-    const fields = parseFields(req.query.fields);
-    if (fields) return res.json(project(JSON.parse(doc.body), fields));
-    res.type('application/json').send(doc.body);
-  })
-);
+const getRecord = wrap(async (req, res) => {
+  const doc = await req.ds.findOneAsync({ _id: req.params.id });
+  if (!doc) return res.status(404).json({ error: `Record ${req.params.id} not found` });
+  const fields = parseFields(req.query.fields);
+  if (fields) return res.json(project(JSON.parse(doc.body), fields));
+  res.type('application/json').send(doc.body);
+});
+
+data.head('/', listRecords);
+data.get('/', listRecords);
+data.head('/:id', getRecord);
+data.get('/:id', getRecord);
 
 data.post(
   '/',
@@ -613,6 +693,8 @@ data.post(
     if (!records.length || records.some((r) => !r || typeof r !== 'object' || Array.isArray(r))) {
       return res.status(400).json({ error: 'Body must be a JSON object or an array of JSON objects' });
     }
+    const stored0 = await req.ds.countAsync({});
+    if (stored0 + records.length > req.mockApi.maxRecords) throw limitError(req.mockApi, stored0, records.length);
     const generate = String(req.query.generate ?? '').toLowerCase() !== 'false';
     const tags = req.mockApi.tags;
     const refs = await store.referenceRecords(req.mockApi._id);
@@ -702,7 +784,8 @@ data.patch(
       await req.ds.updateAsync({ _id: id }, store.toDoc(req.mockApi, next, doc), {});
       return (await storedRecords(req.ds, [id]))[0];
     });
-    res.set('X-Patch-Mode', mode).json(result);
+    const fields = parseFields(req.query.fields);
+    res.set('X-Patch-Mode', mode).json(fields ? project(result, fields) : result);
   })
 );
 
@@ -727,7 +810,7 @@ if (fs.existsSync(DIST)) {
 app.use((req, res) => {
   res.status(404).json({
     error: `No route for ${req.method} ${req.path}`,
-    hint: 'Data endpoints are /api/{name}/{version} and /api/{name}/{version}/{id}',
+    hint: 'Data endpoints are /api/{basePath}/{name}/{version} and /api/{basePath}/{name}/{version}/{id}',
     registered: store.listApis().map((a) => a.basePath),
   });
 });
@@ -752,9 +835,16 @@ async function seedFromEnv() {
       continue;
     }
     const [, rawName, version, file] = m;
-    const name = slugify(rawName);
+    const [groupPart, namePart] = rawName.includes('/') ? rawName.split('/') : [null, rawName];
+    const name = slugify(namePart);
+    let scope = null;
+    if (groupPart) {
+      const parts = groupPart.trim().toLowerCase().split('-');
+      const [domain, team, technology, role, env] = parts;
+      scope = { domain, team, technology, role, env, group: parts.join('-') };
+    }
     try {
-      const api = (await store.createApi(name, version.trim())) || store.getApi(store.apiKey(name, version.trim()));
+      const api = (await store.createApi(name, version.trim(), scope)) || store.getApi(store.apiKey(name, version.trim(), scope?.group));
       if (api.hasSample) continue;
       const sample = JSON.parse(fs.readFileSync(path.resolve(root, file.trim()), 'utf8'));
       const { seeded } = await applySample(api, sample, asRecords(sample).filter((r) => r && typeof r === 'object'));

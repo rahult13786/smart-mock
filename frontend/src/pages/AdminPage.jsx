@@ -4,6 +4,12 @@ import { accounts } from '../api.js';
 import ConfirmModal from '../components/ConfirmModal.jsx';
 
 const MASK = '******';
+const USER_SCOPE = [
+  ['domain', 'Domain'],
+  ['team', 'Team'],
+  ['technology', 'Technology'],
+  ['role', 'Role'],
+];
 const FOLDER_FIELDS = [
   ['domain', 'Domain'],
   ['env', 'Env'],
@@ -76,11 +82,20 @@ function UserModal({ user, onClose, onSaved }) {
     firstName: user?.firstName || '',
     lastName: user?.lastName || '',
     email: user?.email || '',
+    domain: user?.domain || '',
+    team: user?.team || '',
+    technology: user?.technology || '',
+    role: user?.role || '',
     active: user ? !!user.active : true,
   });
+  const [options, setOptions] = useState(null);
   const [password, setPassword] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    accounts.userOptions().then(setOptions).catch((e) => setError(e.message));
+  }, []);
 
   useEffect(() => {
     if (!editing) accounts.newPassword().then((r) => setPassword(r.password)).catch((e) => setError(e.message));
@@ -90,7 +105,7 @@ function UserModal({ user, onClose, onSaved }) {
 
   async function save(e) {
     e?.preventDefault();
-    const missing = [['firstName', 'First name'], ['lastName', 'Last name'], ['email', 'Email']].filter(([k]) => !form[k].trim()).map(([, l]) => l);
+    const missing = [['firstName', 'First name'], ['lastName', 'Last name'], ['email', 'Email'], ...USER_SCOPE].filter(([k]) => !form[k].trim()).map(([, l]) => l);
     if (missing.length) return setError(`${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} required`);
     setBusy(true);
     setError('');
@@ -127,6 +142,18 @@ function UserModal({ user, onClose, onSaved }) {
           Email
           <input type="email" value={form.email} onChange={set('email')} />
         </label>
+        {USER_SCOPE.map(([k, label]) => (
+          <label key={k}>
+            {label} <span className="required">*</span>
+            <select value={form[k]} onChange={set(k)}>
+              <option value="">Select…</option>
+              {(options?.[k] || []).map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </label>
+        ))}
+        <div className="path-preview wide">
+          API base path <code>{USER_SCOPE.map(([k]) => form[k] || '…').join('-')}-{'{env}'}</code>
+        </div>
         <label className="wide">
           Password <span className="muted small">generated – cannot be changed</span>
           <div className="row gap">
@@ -179,6 +206,10 @@ function UsersTab() {
               <th>First name</th>
               <th>Last name</th>
               <th>Email</th>
+              <th>Domain</th>
+              <th>Team</th>
+              <th>Technology</th>
+              <th>Role</th>
               <th className="center">Active</th>
               <th>Password</th>
               <th />
@@ -190,6 +221,9 @@ function UsersTab() {
                 <td>{u.firstName}</td>
                 <td>{u.lastName}</td>
                 <td>{u.email}</td>
+                {USER_SCOPE.map(([k]) => (
+                  <td key={k}>{u[k] || <span className="muted">–</span>}</td>
+                ))}
                 <td className="center">
                   <span className={`pill ${u.active ? 'ok' : 'off'}`}>{u.active ? 'Active' : 'Inactive'}</span>
                 </td>
@@ -203,7 +237,7 @@ function UsersTab() {
               </tr>
             ))}
             {users && users.length === 0 && (
-              <tr><td colSpan={6} className="muted center">No users yet – click + New user.</td></tr>
+              <tr><td colSpan={10} className="muted center">No users yet – click + New user.</td></tr>
             )}
           </tbody>
         </table>
