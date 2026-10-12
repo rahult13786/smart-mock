@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { NavLink, Navigate, useParams, useSearchParams } from 'react-router-dom';
+import { useCallback, useEffect, useState } from 'react';
+import { NavLink, Navigate, useParams } from 'react-router-dom';
 import { accounts } from '../api.js';
 import ConfirmModal from '../components/ConfirmModal.jsx';
 
@@ -9,13 +9,6 @@ const USER_SCOPE = [
   ['team', 'Team'],
   ['technology', 'Technology'],
   ['role', 'Role'],
-];
-const FOLDER_FIELDS = [
-  ['domain', 'Domain'],
-  ['env', 'Env'],
-  ['team', 'Team'],
-  ['role', 'Role'],
-  ['technology', 'Technology'],
 ];
 
 async function copyText(text) {
@@ -269,344 +262,233 @@ function UsersTab() {
   );
 }
 
-function FolderModal({ onClose, onSaved }) {
-  const [options, setOptions] = useState(null);
-  const [form, setForm] = useState(Object.fromEntries(FOLDER_FIELDS.map(([k]) => [k, ''])));
+const CONFIG_TYPES = [
+  ['DOMAIN', 'Domain'],
+  ['TEAM', 'Team'],
+  ['TECHNOLOGY', 'Technology'],
+  ['ROLE', 'Role'],
+];
+
+function ConfigurationsTab() {
+  const [rows, setRows] = useState(null);
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    accounts.folderOptions().then(setOptions).catch((e) => setError(e.message));
-  }, []);
-
-  const complete = FOLDER_FIELDS.every(([k]) => form[k]);
-  const name = FOLDER_FIELDS.map(([k]) => form[k] || '…').join('-');
-
-  async function save() {
-    if (!complete) return setError(`${FOLDER_FIELDS.filter(([k]) => !form[k]).map(([, l]) => l).join(', ')} required`);
-    setBusy(true);
-    setError('');
-    try {
-      onSaved(await accounts.createFolder(form));
-    } catch (e) {
-      setError(e.message);
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Modal
-      title="New folder"
-      onClose={onClose}
-      footer={
-        <>
-          <button className="btn ghost" onClick={onClose}>Cancel</button>
-          <button className="btn primary" disabled={busy || !options} onClick={save}>{busy ? 'Saving…' : 'Save'}</button>
-        </>
-      }
-    >
-      <div className="user-form">
-        {FOLDER_FIELDS.map(([k, label]) => (
-          <label key={k}>
-            {label} <span className="required">*</span>
-            <select value={form[k]} onChange={(e) => { setForm({ ...form, [k]: e.target.value }); setError(''); }}>
-              <option value="">Select…</option>
-              {(options?.[k] || []).map((o) => <option key={o} value={o}>{o}</option>)}
-            </select>
-          </label>
-        ))}
-      </div>
-      <div className="folder-preview">
-        Folder name <code>{name}</code>
-      </div>
-      {error && <div className="alert error">{error}</div>}
-    </Modal>
-  );
-}
-
-function AddUsersModal({ folder, onClose, onSaved }) {
-  const [users, setUsers] = useState(null);
-  const [picked, setPicked] = useState(() => new Set());
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    accounts.users().then(setUsers).catch((e) => setError(e.message));
-  }, []);
-
-  const available = useMemo(() => (users || []).filter((u) => !folder.userIds.includes(u._id)), [users, folder.userIds]);
-  const toggle = (id) => {
-    const next = new Set(picked);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    setPicked(next);
-  };
-
-  async function save() {
-    setBusy(true);
-    setError('');
-    try {
-      onSaved(await accounts.setFolderUsers(folder._id, [...folder.userIds, ...picked]));
-    } catch (e) {
-      setError(e.message);
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Modal
-      title={`Add users – ${folder.name}`}
-      size="wide"
-      onClose={onClose}
-      footer={
-        <>
-          <span className="muted small">{picked.size} selected</span>
-          <span className="spacer" />
-          <button className="btn ghost" onClick={onClose}>Cancel</button>
-          <button className="btn primary" disabled={busy || !picked.size} onClick={save}>{busy ? 'Saving…' : 'Add user'}</button>
-        </>
-      }
-    >
-      {!users && !error && <p className="muted">Loading users…</p>}
-      {users && available.length === 0 && <p className="muted">Every user is already in this folder{users.length ? '' : ' (no users yet – create them in the Users tab)'}.</p>}
-      {available.length > 0 && (
-        <table className="grid">
-          <thead>
-            <tr>
-              <th className="center">
-                <input
-                  type="checkbox"
-                  title="Select all"
-                  checked={picked.size === available.length}
-                  onChange={(e) => setPicked(new Set(e.target.checked ? available.map((u) => u._id) : []))}
-                />
-              </th>
-              <th>First name</th>
-              <th>Last name</th>
-              <th>Email</th>
-              <th className="center">Active</th>
-            </tr>
-          </thead>
-          <tbody>
-            {available.map((u) => (
-              <tr key={u._id} className={picked.has(u._id) ? 'picked' : ''} onClick={() => toggle(u._id)}>
-                <td className="center"><input type="checkbox" checked={picked.has(u._id)} onChange={() => toggle(u._id)} onClick={(e) => e.stopPropagation()} /></td>
-                <td>{u.firstName}</td>
-                <td>{u.lastName}</td>
-                <td>{u.email}</td>
-                <td className="center"><span className={`pill ${u.active ? 'ok' : 'off'}`}>{u.active ? 'Active' : 'Inactive'}</span></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      {error && <div className="alert error">{error}</div>}
-    </Modal>
-  );
-}
-
-function FolderUsers({ folderId, onChanged, onDeleted }) {
-  const [folder, setFolder] = useState(null);
-  const [error, setError] = useState('');
-  const [editing, setEditing] = useState(false);
-  const [checked, setChecked] = useState(() => new Set());
-  const [adding, setAdding] = useState(false);
-  const [removing, setRemoving] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
+  const [adding, setAdding] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [filter, setFilter] = useState('');
+  const [removing, setRemoving] = useState(null);
 
-  const show = useCallback((f) => {
-    setFolder(f);
-    setChecked(new Set(f.userIds));
-    setEditing(false);
-  }, []);
-
+  const load = useCallback(() => accounts.configurations().then(setRows).catch((e) => setError(e.message)), []);
   useEffect(() => {
-    setFolder(null);
-    setNotice('');
-    setError('');
-    accounts.folder(folderId).then(show).catch((e) => setError(e.message));
-  }, [folderId, show]);
+    load();
+  }, [load]);
 
-  async function saveEdit() {
+  async function save(e) {
+    e?.preventDefault();
+    if (!adding.value.trim()) return setError('Enter a value');
     setBusy(true);
     setError('');
     try {
-      const f = await accounts.setFolderUsers(folder._id, folder.userIds.filter((id) => checked.has(id)));
-      const removed = folder.userIds.length - f.userIds.length;
-      show(f);
-      setNotice(removed ? `${removed} user${removed === 1 ? '' : 's'} removed from the folder.` : 'No change.');
-      onChanged();
-    } catch (e) {
-      setError(e.message);
+      const c = await accounts.addConfiguration(adding.type, adding.value.trim());
+      setNotice(`${c.type} "${c.value}" added – it is now offered under ${CONFIG_TYPES.find(([t]) => t === c.type)[1]} when creating or editing a user.`);
+      setAdding({ type: adding.type, value: '' });
+      await load();
+    } catch (err) {
+      setError(err.message);
     } finally {
       setBusy(false);
     }
   }
 
-  if (error && !folder) return <div className="alert error">{error}</div>;
-  if (!folder) return <p className="muted">Loading folder…</p>;
-
-  return (
-    <div className="card folder-users">
-      <div className="section-head">
-        <h3><code>{folder.name}</code></h3>
-        <span className="count">{folder.users.length} user{folder.users.length === 1 ? '' : 's'}</span>
-        <span className="spacer" />
-        {editing ? (
-          <>
-            <button className="btn ghost" disabled={busy} onClick={() => { setChecked(new Set(folder.userIds)); setEditing(false); }}>Cancel</button>
-            <button className="btn primary" disabled={busy} onClick={saveEdit}>{busy ? 'Saving…' : 'Save'}</button>
-          </>
-        ) : (
-          <>
-            <button className="btn primary" onClick={() => setAdding(true)}>+ Add user</button>
-            <button className="btn" disabled={!folder.users.length} onClick={() => { setNotice(''); setEditing(true); }}>Edit</button>
-            <button className="btn ghost danger" title="Delete folder" onClick={() => setRemoving(true)}>🗑</button>
-          </>
-        )}
-      </div>
-      <div className="folder-tags">
-        {FOLDER_FIELDS.map(([k, label]) => (
-          <span key={k} className="pill">{label}: {folder[k]}</span>
-        ))}
-      </div>
-      {editing && <p className="muted small">Untick users to remove them from this folder, then Save.</p>}
-      {notice && <div className="alert ok">{notice}</div>}
-      {error && <div className="alert error">{error}</div>}
-      <table className="grid">
-        <thead>
-          <tr>
-            <th className="center">Edit</th>
-            <th>First name</th>
-            <th>Last name</th>
-            <th>Email</th>
-            <th className="center">Active</th>
-          </tr>
-        </thead>
-        <tbody>
-          {folder.users.map((u) => (
-            <tr key={u._id} className={editing && !checked.has(u._id) ? 'unpicked' : ''}>
-              <td className="center">
-                <input
-                  type="checkbox"
-                  disabled={!editing}
-                  checked={checked.has(u._id)}
-                  onChange={() => {
-                    const next = new Set(checked);
-                    if (next.has(u._id)) next.delete(u._id);
-                    else next.add(u._id);
-                    setChecked(next);
-                  }}
-                />
-              </td>
-              <td>{u.firstName}</td>
-              <td>{u.lastName}</td>
-              <td>{u.email}</td>
-              <td className="center"><span className={`pill ${u.active ? 'ok' : 'off'}`}>{u.active ? 'Active' : 'Inactive'}</span></td>
-            </tr>
-          ))}
-          {folder.users.length === 0 && (
-            <tr><td colSpan={5} className="muted center">No users in this folder – click + Add user.</td></tr>
-          )}
-        </tbody>
-      </table>
-      {adding && (
-        <AddUsersModal
-          folder={folder}
-          onClose={() => setAdding(false)}
-          onSaved={(f) => {
-            const added = f.userIds.length - folder.userIds.length;
-            setAdding(false);
-            show(f);
-            setNotice(`${added} user${added === 1 ? '' : 's'} added to the folder.`);
-            onChanged();
-          }}
-        />
-      )}
-      {removing && (
-        <ConfirmModal
-          title="Delete folder"
-          message={<>Delete folder <b>{folder.name}</b> and its user associations? The users themselves are kept.</>}
-          onConfirm={async () => {
-            await accounts.removeFolder(folder._id);
-            onDeleted(folder);
-          }}
-          onClose={() => setRemoving(false)}
-        />
-      )}
-    </div>
-  );
-}
-
-function FoldersTab() {
-  const [folders, setFolders] = useState(null);
-  const [error, setError] = useState('');
-  const [creating, setCreating] = useState(false);
-  const [notice, setNotice] = useState('');
-  const [params, setParams] = useSearchParams();
-  const selected = params.get('folder');
-  const select = (id) => setParams(id ? { folder: id } : {});
-
-  const load = useCallback(() => accounts.folders().then(setFolders).catch((e) => setError(e.message)), []);
-  useEffect(() => {
-    load();
-  }, [load]);
+  const shown = (rows || []).filter((r) => !filter || r.type === filter);
 
   return (
     <>
       <div className="section-head">
-        <h3>Folders</h3>
-        <span className="count">{folders ? folders.length : '…'}</span>
+        <h3>Configurations</h3>
+        <span className="count">{rows ? rows.length : '…'}</span>
+        <select className="type-filter" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter by type">
+          <option value="">All types</option>
+          {CONFIG_TYPES.map(([t]) => <option key={t} value={t}>{t}</option>)}
+        </select>
         <span className="spacer" />
-        <button className="btn primary" onClick={() => setCreating(true)}>+ New folder</button>
+        <button className="btn primary" disabled={!!adding} onClick={() => { setNotice(''); setError(''); setAdding({ type: filter || 'DOMAIN', value: '' }); }}>+ New value</button>
       </div>
+      <p className="muted small">
+        The values of each TYPE are the choices offered for Domain, Team, Technology and Role when a user is created or
+        edited. They become part of API base paths, so use lower-case letters, digits or _ only.
+      </p>
       {notice && <div className="alert ok">{notice}</div>}
       {error && <div className="alert error">{error}</div>}
       <div className="card table-card">
-        <table className="grid folders">
+        <table className="grid config-table">
           <thead>
             <tr>
-              <th>Folder name</th>
-              {FOLDER_FIELDS.map(([k, label]) => <th key={k}>{label}</th>)}
-              <th className="center">Users</th>
+              <th>TYPE</th>
+              <th>VALUES</th>
+              <th className="center">Used by users</th>
+              <th />
             </tr>
           </thead>
           <tbody>
-            {folders?.map((f) => (
-              <tr key={f._id} className={`clickable ${selected === f._id ? 'selected' : ''}`} onClick={() => select(selected === f._id ? null : f._id)}>
-                <td><code>{f.name}</code></td>
-                {FOLDER_FIELDS.map(([k]) => <td key={k}>{f[k]}</td>)}
-                <td className="center"><span className="count">{f.userCount}</span></td>
+            {adding && (
+              <tr className="new-tag-row">
+                <td>
+                  <select value={adding.type} onChange={(e) => setAdding({ ...adding, type: e.target.value })}>
+                    {CONFIG_TYPES.map(([t]) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </td>
+                <td>
+                  <input
+                    autoFocus
+                    placeholder="e.g. wholesale"
+                    value={adding.value}
+                    onChange={(e) => { setAdding({ ...adding, value: e.target.value }); setError(''); }}
+                    onKeyDown={(e) => e.key === 'Enter' && save(e)}
+                  />
+                </td>
+                <td />
+                <td className="nowrap right">
+                  <button className="btn small primary" disabled={busy || !adding.value.trim()} onClick={save}>{busy ? 'Saving…' : 'Save'}</button>{' '}
+                  <button className="btn small ghost" onClick={() => { setAdding(null); setError(''); }}>Cancel</button>
+                </td>
+              </tr>
+            )}
+            {shown.map((r) => (
+              <tr key={r._id}>
+                <td><span className={`pill type-${r.type.toLowerCase()}`}>{r.type}</span></td>
+                <td><code>{r.value}</code></td>
+                <td className="center">{r.usedBy ? <span className="count">{r.usedBy}</span> : <span className="muted">–</span>}</td>
+                <td className="nowrap right">
+                  <button
+                    className="btn small ghost danger"
+                    disabled={r.usedBy > 0}
+                    title={r.usedBy ? 'Used by users – change them first' : 'Delete value'}
+                    onClick={() => setRemoving(r)}
+                  >
+                    Delete
+                  </button>
+                </td>
               </tr>
             ))}
-            {folders && folders.length === 0 && (
-              <tr><td colSpan={FOLDER_FIELDS.length + 2} className="muted center">No folders yet – click + New folder.</td></tr>
+            {rows && shown.length === 0 && !adding && (
+              <tr><td colSpan={4} className="muted center">No values{filter ? ` for ${filter}` : ''}.</td></tr>
             )}
           </tbody>
         </table>
       </div>
-      {folders && folders.length > 0 && !selected && <p className="muted small">Select a folder to see and manage its users.</p>}
-      {selected && (
-        <FolderUsers
-          folderId={selected}
-          onChanged={load}
-          onDeleted={(f) => {
-            select(null);
-            setNotice(`Folder ${f.name} deleted.`);
-            load();
+      {removing && (
+        <ConfirmModal
+          title="Delete value"
+          message={<>Delete {removing.type} <b>{removing.value}</b>? It will no longer be offered for new or edited users.</>}
+          onConfirm={async () => {
+            await accounts.removeConfiguration(removing._id);
+            setNotice(`${removing.type} "${removing.value}" deleted.`);
+            await load();
           }}
+          onClose={() => setRemoving(null)}
         />
       )}
-      {creating && (
-        <FolderModal
-          onClose={() => setCreating(false)}
-          onSaved={(f) => {
-            setCreating(false);
-            setNotice(`Folder ${f.name} created.`);
-            load();
-            select(f._id);
+    </>
+  );
+}
+
+const fmtTime = (iso) => (iso ? new Date(iso).toLocaleString() : '–');
+const METHOD_ORDER = ['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE'];
+
+function AnalyticsTab() {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const [resetting, setResetting] = useState(false);
+  const [hideUnused, setHideUnused] = useState(false);
+
+  const load = useCallback(() => accounts.analytics().then((d) => { setData(d); setError(''); }).catch((e) => setError(e.message)), []);
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 10000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  const rows = (data?.apis || []).filter((r) => !hideUnused || r.requests > 0);
+  const max = Math.max(1, ...rows.map((r) => r.requests));
+
+  return (
+    <>
+      <div className="section-head">
+        <h3>Analytics</h3>
+        <span className="muted small">
+          Mock API traffic recorded with morgan{data?.since ? ` since ${fmtTime(data.since)}` : ''} · most used first · refreshes every 10 s
+        </span>
+        <span className="spacer" />
+        <label className="check small">
+          <input type="checkbox" checked={hideUnused} onChange={(e) => setHideUnused(e.target.checked)} /> Hide APIs without requests
+        </label>
+        <button className="btn" onClick={load}>Refresh</button>
+        <button className="btn ghost danger" onClick={() => setResetting(true)}>Reset</button>
+      </div>
+      {error && <div className="alert error">{error}</div>}
+      {data && (
+        <div className="stat-tiles">
+          <div className="stat"><span>API requests</span><b>{data.total.requests}</b></div>
+          <div className="stat ok"><span>Successful</span><b>{data.total.success}</b></div>
+          <div className="stat bad"><span>Failed</span><b>{data.total.failed}</b></div>
+          <div className="stat"><span>Success rate</span><b>{data.total.requests ? `${Math.round((data.total.success / data.total.requests) * 1000) / 10}%` : '–'}</b></div>
+        </div>
+      )}
+      <div className="card table-card">
+        <table className="grid analytics">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>API</th>
+              <th className="num">API requests</th>
+              <th className="num">Successful requests</th>
+              <th className="num">Failed requests</th>
+              <th className="num">Avg ms</th>
+              <th>Methods</th>
+              <th>Last request</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={r.key} className={r.registered ? '' : 'muted-row'}>
+                <td className="muted">{i + 1}</td>
+                <td>
+                  <div className="api-cell">
+                    <b>{r.name}</b> {r.version && <span className="badge">{r.env ? `${r.env} · ${r.version}` : r.version}</span>}
+                    {!r.registered && r.key !== '__unregistered__' && <span className="pill">deleted</span>}
+                  </div>
+                  <code className="muted small">{r.basePath}</code>
+                  <div className="bar"><span style={{ width: `${(r.requests / max) * 100}%` }} /></div>
+                </td>
+                <td className="num"><b>{r.requests}</b></td>
+                <td className="num ok-text">{r.success}</td>
+                <td className={`num ${r.failed ? 'error-text' : 'muted'}`}>{r.failed}</td>
+                <td className="num">{r.requests ? r.avgMs : '–'}</td>
+                <td className="methods">
+                  {METHOD_ORDER.filter((m) => r.methods?.[m]).map((m) => (
+                    <span key={m} className="method-pill">{m} {r.methods[m]}</span>
+                  ))}
+                </td>
+                <td className="small muted nowrap">{fmtTime(r.lastAt)}</td>
+              </tr>
+            ))}
+            {data && rows.length === 0 && (
+              <tr><td colSpan={8} className="muted center">No API requests yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {resetting && (
+        <ConfirmModal
+          title="Reset analytics"
+          message="Set all request counters back to zero?"
+          confirmLabel="Reset"
+          onConfirm={async () => {
+            await accounts.resetAnalytics();
+            await load();
           }}
+          onClose={() => setResetting(false)}
         />
       )}
     </>
@@ -615,20 +497,23 @@ function FoldersTab() {
 
 export default function AdminPage() {
   const { tab } = useParams();
-  if (tab !== 'users' && tab !== 'folders') return <Navigate to="/admin-view/users" replace />;
+  if (!['users', 'configurations', 'analytics'].includes(tab)) return <Navigate to="/admin-view/users" replace />;
   return (
     <div className="page admin-page">
       <div className="page-head">
         <div>
           <h1>Admin view</h1>
-          <p className="muted">Users and folders, stored in the portal's NeDB data.</p>
+          <p className="muted">Users, the values offered for their Domain / Team / Technology / Role, and API usage – stored in the portal's NeDB data.</p>
         </div>
       </div>
       <div className="admin-tabs" role="tablist">
         <NavLink to="/admin-view/users" role="tab">Users</NavLink>
-        <NavLink to="/admin-view/folders" role="tab">Folders</NavLink>
+        <NavLink to="/admin-view/configurations" role="tab">Configurations</NavLink>
+        <NavLink to="/admin-view/analytics" role="tab">Analytics</NavLink>
       </div>
-      {tab === 'users' ? <UsersTab /> : <FoldersTab />}
+      {tab === 'users' && <UsersTab />}
+      {tab === 'configurations' && <ConfigurationsTab />}
+      {tab === 'analytics' && <AnalyticsTab />}
     </div>
   );
 }

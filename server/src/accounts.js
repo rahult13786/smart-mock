@@ -2,21 +2,43 @@ const crypto = require('crypto');
 const express = require('express');
 const store = require('./store');
 
-const FOLDER_OPTIONS = {
-  domain: ['fixedline', 'gsm'],
-  env: ['dev', 'st', 'sit'],
-  team: ['bau', 'project'],
-  role: ['dev', 'test'],
-  technology: ['ms', 'esb'],
-};
-const FOLDER_FIELDS = Object.keys(FOLDER_OPTIONS);
-const USER_OPTIONS = {
-  domain: ['fixedline', 'gsm'],
-  team: ['bau', 'project'],
-  technology: ['ms', 'esb', 'portal'],
-  role: ['dev', 'test'],
-};
-const USER_SCOPE = Object.keys(USER_OPTIONS);
+const CONFIG_TYPES = { DOMAIN: 'domain', TEAM: 'team', TECHNOLOGY: 'technology', ROLE: 'role' };
+const USER_SCOPE = Object.values(CONFIG_TYPES);
+const DEFAULT_CONFIG = [
+  ['DOMAIN', 'fixedline'],
+  ['DOMAIN', 'gsm'],
+  ['TEAM', 'bau'],
+  ['TEAM', 'project'],
+  ['TECHNOLOGY', 'ms'],
+  ['TECHNOLOGY', 'esb'],
+  ['TECHNOLOGY', 'portal'],
+  ['ROLE', 'dev'],
+  ['ROLE', 'test'],
+];
+const CONFIG_VALUE = /^[a-z0-9_]{1,40}$/;
+const TYPE_ORDER = Object.keys(CONFIG_TYPES);
+
+async function configList() {
+  const ds = await store.getCollection('configs');
+  let docs = await ds.findAsync({});
+  if (!docs.length) {
+    docs = await store.withLock('configs-seed', async () => {
+      const again = await ds.findAsync({});
+      if (again.length) return again;
+      const now = Date.now();
+      const seed = DEFAULT_CONFIG.map(([type, value], i) => ({ _id: `${type}:${value}`, type, value, createdAt: new Date(now + i).toISOString() }));
+      await ds.insertAsync(seed);
+      return seed;
+    });
+  }
+  return docs.sort((a, b) => TYPE_ORDER.indexOf(a.type) - TYPE_ORDER.indexOf(b.type) || a.createdAt.localeCompare(b.createdAt));
+}
+
+async function userOptions() {
+  const out = Object.fromEntries(USER_SCOPE.map((k) => [k, []]));
+  for (const c of await configList()) out[CONFIG_TYPES[c.type]]?.push(c.value);
+  return out;
+}
 const ENVS = ['dev', 'st', 'sit'];
 const ADMIN_LOGIN = 'smadmin';
 const ADMIN_PASSWORD = () => process.env.SMADMIN_PASSWORD || 'smadmin';
@@ -75,24 +97,17 @@ async function checkUser(body, users, selfId) {
   if (!EMAIL.test(user.email)) throw { status: 400, code: 'INVALID_EMAIL', message: `"${user.email}" is not a valid email address` };
   if (user.email === ADMIN_LOGIN) throw { status: 409, code: 'EMAIL_EXISTS', message: `"${ADMIN_LOGIN}" is reserved` };
   const problems = [];
+  const options = await userOptions();
   for (const k of USER_SCOPE) {
     const v = text(body[k]).toLowerCase();
     if (!v) problems.push(`${k} is required`);
-    else if (!USER_OPTIONS[k].includes(v)) problems.push(`${k} must be one of ${USER_OPTIONS[k].join(', ')}`);
+    else if (!options[k].includes(v)) problems.push(`${k} must be one of ${options[k].join(', ')}`);
     user[k] = v;
   }
   if (problems.length) throw { status: 400, code: 'INVALID_USER', message: problems.join('; '), problems };
   const clash = await users.findOneAsync({ email: user.email });
   if (clash && clash._id !== selfId) throw { status: 409, code: 'EMAIL_EXISTS', message: `A user with email ${user.email} already exists` };
   return user;
-}
-
-const folderName = (f) => FOLDER_FIELDS.map((k) => f[k]).join('-');
-
-async function withUsers(folder) {
-  const users = await store.getCollection('users');
-  const list = await users.findAsync({ _id: { $in: folder.userIds || [] } });
-  return { ...folder, users: list.map(publicUser).sort(byName) };
 }
 
 const scopePrefix = (u) => (u && !u.isAdmin ? USER_SCOPE.map((k) => u[k]).join('-') : null);
@@ -192,7 +207,7 @@ authRouter.post(
   })
 );
 
-authRouter.get('/auth/options', (_req, res) => res.json({ ...USER_OPTIONS, env: ENVS }));
+authRouter.get('/auth/options', wrap(async (_req, res) => res.json({ ...(await userOptions()), env: ENVS })));
 
 const router = express.Router();
 
@@ -204,7 +219,55 @@ router.get(
   })
 );
 
-router.get('/users/options', (_req, res) => res.json(USER_OPTIONS));
+router.get('/users/options', wrap(async (_req, res) => res.json(await userOptions())));
+
+router.get(
+  '/configurations',
+  wrap(async (_req, res) => {
+    const users = await (await store.getCollection('users')).findAsync({});
+    res.json(
+      (await configList()).map((c) => ({
+        ...c,
+        usedBy: users.filter((u) => u[CONFIG_TYPES[c.type]] === c.value).length,
+      }))
+    );
+  })
+);
+
+router.post(
+  '/configurations',
+  wrap(async (req, res) => {
+    const type = text(req.body?.type).toUpperCase();
+    const value = text(req.body?.value).toLowerCase();
+    if (!CONFIG_TYPES[type]) throw { status: 400, code: 'INVALID_TYPE', message: `TYPE must be one of ${TYPE_ORDER.join(', ')}` };
+    if (!CONFIG_VALUE.test(value)) {
+      throw { status: 400, code: 'INVALID_VALUE', message: 'VALUE must be 1–40 lower-case letters, digits or _ (no spaces or "-", it becomes part of the API base path)' };
+    }
+    await configList();
+    const ds = await store.getCollection('configs');
+    const doc = await store.withLock('configs', async () => {
+      if (await ds.findOneAsync({ type, value })) throw { status: 409, code: 'CONFIG_EXISTS', message: `${type} "${value}" already exists` };
+      const d = { _id: `${type}:${value}`, type, value, createdAt: new Date().toISOString() };
+      await ds.insertAsync(d);
+      return d;
+    });
+    res.status(201).json({ ...doc, usedBy: 0 });
+  })
+);
+
+router.delete(
+  '/configurations/:id',
+  wrap(async (req, res) => {
+    const ds = await store.getCollection('configs');
+    const c = await ds.findOneAsync({ _id: req.params.id });
+    if (!c) return res.status(404).json({ error: 'Configuration value not found' });
+    const field = CONFIG_TYPES[c.type];
+    const used = await (await store.getCollection('users')).countAsync({ [field]: c.value });
+    if (used) throw { status: 409, code: 'CONFIG_IN_USE', message: `${c.type} "${c.value}" is used by ${used} user${used === 1 ? '' : 's'} – change them first` };
+    await ds.removeAsync({ _id: c._id }, {});
+    res.json({ deleted: c._id });
+  })
+);
 
 router.get('/users/password', (_req, res) => res.json({ password: generatePassword() }));
 
@@ -257,91 +320,8 @@ router.delete(
     const users = await store.getCollection('users');
     const n = await users.removeAsync({ _id: req.params.id }, {});
     if (!n) return res.status(404).json({ error: 'User not found' });
-    const folders = await store.getCollection('folders');
-    for (const f of await folders.findAsync({ userIds: req.params.id })) {
-      await folders.updateAsync({ _id: f._id }, { ...f, userIds: f.userIds.filter((id) => id !== req.params.id), updatedAt: new Date().toISOString() }, {});
-    }
     res.json({ deleted: req.params.id });
   })
 );
 
-router.get('/folders/options', (_req, res) => res.json(FOLDER_OPTIONS));
-
-router.get(
-  '/folders',
-  wrap(async (_req, res) => {
-    const folders = await store.getCollection('folders');
-    const list = await folders.findAsync({});
-    res.json(list.map((f) => ({ ...f, userCount: (f.userIds || []).length })).sort((a, b) => a.name.localeCompare(b.name)));
-  })
-);
-
-router.post(
-  '/folders',
-  wrap(async (req, res) => {
-    const body = req.body || {};
-    const folder = {};
-    const problems = [];
-    for (const k of FOLDER_FIELDS) {
-      const v = text(body[k]).toLowerCase();
-      if (!v) problems.push(`${k} is required`);
-      else if (!FOLDER_OPTIONS[k].includes(v)) problems.push(`${k} must be one of ${FOLDER_OPTIONS[k].join(', ')}`);
-      folder[k] = v;
-    }
-    if (problems.length) throw { status: 400, code: 'INVALID_FOLDER', message: problems.join('; '), problems };
-    const name = folderName(folder);
-    const folders = await store.getCollection('folders');
-    const doc = await store.withLock('folders', async () => {
-      if (await folders.findOneAsync({ name })) throw { status: 409, code: 'FOLDER_EXISTS', message: `Folder ${name} already exists` };
-      const now = new Date().toISOString();
-      const d = { _id: name, name, ...folder, userIds: [], createdAt: now, updatedAt: now };
-      await folders.insertAsync(d);
-      return d;
-    });
-    res.status(201).json({ ...doc, userCount: 0 });
-  })
-);
-
-router.get(
-  '/folders/:id',
-  wrap(async (req, res) => {
-    const folders = await store.getCollection('folders');
-    const f = await folders.findOneAsync({ _id: req.params.id });
-    if (!f) return res.status(404).json({ error: 'Folder not found' });
-    res.json(await withUsers(f));
-  })
-);
-
-router.put(
-  '/folders/:id/users',
-  wrap(async (req, res) => {
-    const ids = req.body?.userIds;
-    if (!Array.isArray(ids)) throw { status: 400, message: 'userIds must be an array' };
-    const unique = [...new Set(ids.map(String))];
-    const users = await store.getCollection('users');
-    const found = new Set((await users.findAsync({ _id: { $in: unique } })).map((u) => u._id));
-    const unknown = unique.filter((id) => !found.has(id));
-    if (unknown.length) throw { status: 400, code: 'UNKNOWN_USER', message: `Unknown user id(s): ${unknown.join(', ')}` };
-    const folders = await store.getCollection('folders');
-    const updated = await store.withLock(`folder:${req.params.id}`, async () => {
-      const f = await folders.findOneAsync({ _id: req.params.id });
-      if (!f) throw { status: 404, message: 'Folder not found' };
-      const next = { ...f, userIds: unique, updatedAt: new Date().toISOString() };
-      await folders.updateAsync({ _id: f._id }, next, {});
-      return next;
-    });
-    res.json(await withUsers(updated));
-  })
-);
-
-router.delete(
-  '/folders/:id',
-  wrap(async (req, res) => {
-    const folders = await store.getCollection('folders');
-    const n = await folders.removeAsync({ _id: req.params.id }, {});
-    if (!n) return res.status(404).json({ error: 'Folder not found' });
-    res.json({ deleted: req.params.id });
-  })
-);
-
-module.exports = { router, authRouter, authenticate, requireAdmin, canAccess, scopePrefix, generatePassword, FOLDER_OPTIONS, USER_OPTIONS, ENVS, ADMIN_LOGIN };
+module.exports = { router, authRouter, authenticate, requireAdmin, canAccess, scopePrefix, generatePassword, userOptions, USER_SCOPE, ENVS, ADMIN_LOGIN };

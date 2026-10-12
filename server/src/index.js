@@ -8,6 +8,7 @@ const { computeTags, safeKey, validateTags, listPaths, inspectPath, suggest, nor
 const { detectMode, applyPatch, uniqueKeys } = require('./patch');
 const { enumViolations, enumError, normalizeEnum, locate } = require('./enums');
 const accounts = require('./accounts');
+const analytics = require('./analytics');
 const { parseFields, project, parseSort, sortDocs, splitOperator } = require('./query');
 const { idPaths, fieldPaths, buildMocks, currentValues, MAX_MOCKS } = require('./mockgen');
 const { buildRegex, compileRegex, examples, fillIds, fillMissing, applyMaps, mapCandidates, mustViolations, mustError, tagPathOfPointer, createOn } = require('./generate');
@@ -17,6 +18,7 @@ const BODY_LIMIT = process.env.BODY_LIMIT || '50mb';
 
 const app = express();
 app.use(cors({ exposedHeaders: ['Location', 'X-Total-Count', 'X-Result-Count', 'X-Patch-Mode', 'X-Patch-Resolved', 'X-Search-Config-Updated', 'X-Not-Found-Ids'] }));
+app.use(analytics.logger);
 app.use(express.json({ limit: BODY_LIMIT, type: ['application/json', 'application/*+json'] }));
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -94,17 +96,18 @@ admin.get(
   })
 );
 
-function scopeFor(user, body) {
+async function scopeFor(user, body) {
   const env = String(body?.env || '').trim().toLowerCase();
   if (!accounts.ENVS.includes(env)) throw { status: 400, code: 'INVALID_ENV', message: `env must be one of ${accounts.ENVS.join(', ')}` };
   const scope = { env };
-  for (const k of Object.keys(accounts.USER_OPTIONS)) {
+  const options = await accounts.userOptions();
+  for (const k of accounts.USER_SCOPE) {
     const v = user.isAdmin ? String(body?.[k] || '').trim().toLowerCase() : user[k];
-    if (!accounts.USER_OPTIONS[k].includes(v)) {
+    if (!options[k].includes(v)) {
       throw {
         status: 400,
         code: 'INVALID_SCOPE',
-        message: user.isAdmin ? `${k} must be one of ${accounts.USER_OPTIONS[k].join(', ')}` : `Your user has no valid ${k} – ask smadmin to update your user`,
+        message: user.isAdmin ? `${k} must be one of ${options[k].join(', ')}` : `Your user's ${k} "${v || ''}" is not configured – ask smadmin to update your user`,
       };
     }
     scope[k] = v;
@@ -120,7 +123,7 @@ admin.post(
     const version = String(req.body?.version || '').trim();
     if (!SLUG.test(name)) return res.status(400).json({ error: 'name is required (letters, digits, - or _)' });
     if (!VERSION.test(version)) return res.status(400).json({ error: 'version is required, e.g. v1 or 1.0' });
-    const scope = scopeFor(req.user, req.body);
+    const scope = await scopeFor(req.user, req.body);
     const api = await store.createApi(name, version, scope);
     if (!api) return res.status(409).json({ error: `API ${scope.group}/${name}/${version} is already registered`, code: 'API_EXISTS' });
     res.status(201).json(api);
@@ -482,8 +485,9 @@ admin.delete(
 
 app.use('/admin', accounts.authRouter);
 app.use('/admin', accounts.authenticate);
-app.use(['/admin/users', '/admin/folders'], accounts.requireAdmin);
+app.use(['/admin/users', '/admin/configurations', '/admin/analytics'], accounts.requireAdmin);
 app.use('/admin', accounts.router);
+app.use('/admin', analytics.router);
 app.use('/admin', admin);
 
 const data = express.Router({ mergeParams: true });
@@ -529,6 +533,12 @@ app.use(
     data(req, res, next);
   })
 );
+
+analytics.setResolver((url) => {
+  const segs = String(url).split('?')[0].split('/').filter(Boolean).slice(1);
+  const hit = segs.length >= 2 ? resolveApi(segs) : null;
+  return hit ? hit.api : null;
+});
 
 function limitError(api, count, adding) {
   return {
@@ -865,6 +875,14 @@ const ready = store.init().then(async () => {
 });
 
 if (require.main === module) {
+  for (const sig of ['SIGTERM', 'SIGINT']) {
+    process.once(sig, () => {
+      analytics
+        .persist()
+        .catch(() => {})
+        .finally(() => process.exit(0));
+    });
+  }
   ready.then(
     () => app.listen(PORT, () => console.log(`Mock API server listening on http://localhost:${PORT}`)),
     (e) => {
