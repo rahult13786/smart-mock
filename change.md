@@ -3,6 +3,58 @@
 Each section lists the files inside `mock-api-portal-<version>.tar.gz` (top folder `mock-api-portal/`) that
 changed compared with the previous package. `node_modules` is summarised by package.
 
+## Modification in round 11
+
+Package **mock-api-portal-1.11.0.tar.gz**, compared with **mock-api-portal-1.10.0.tar.gz**.
+
+### Changes in this round
+
+1. **Raw JSON of the whole record is editable** – on the record details page, *Raw JSON* (top) now has *Edit JSON*;
+   *Save JSON* sends the changes as a JSON Patch, stores the record and refreshes the page (heading, fields and
+   sections) with the saved record. The record id cannot be changed there (use *Copy record*).
+2. **# Records** – the stored count is shown next to the label in brackets, e.g. `# Records (3 stored)`, instead of
+   on its own line.
+3. **Raw JSON tree** (all places) – nodes expand with a **+** icon and collapse with a **−** icon instead of `[>]` / `[V]`.
+
+### Added
+
+| File | Why |
+|---|---|
+| `frontend/dist/assets/index-B8F6UI_B.js` | rebuilt portal (replaces `index-xwZ1TNsT.js`) |
+| `frontend/dist/assets/index-MNGDbV4Y.css` | rebuilt portal styles (replaces `index-kEBL_2NK.css`) |
+
+### Modified
+
+| File | Why |
+|---|---|
+| `frontend/dist/index.html` | references the rebuilt assets |
+| `server/package.json` | version 1.11.0 |
+| `server/package-lock.json` | version 1.11.0 |
+| `DEPLOY.md` | version 1.11.0 |
+| `build-info.json` | version 1.11.0, build time |
+| `change.md` | this section |
+
+### Removed
+
+| File | Why |
+|---|---|
+| `frontend/dist/assets/index-xwZ1TNsT.js` | replaced by the rebuilt portal |
+| `frontend/dist/assets/index-kEBL_2NK.css` | replaced by the rebuilt portal |
+
+### Unchanged
+
+`server/src/*` (API server not changed), `start.sh`, `openshift/*`, `samples/agreement.json`, `server/data/`,
+`server/node_modules`.
+
+### Files next to the .tar
+
+| File | Change |
+|---|---|
+| `Dockerfile` | `PACKAGE` points to `mock-api-portal-1.11.0.tar.gz` |
+| `DEPLOY.md` | version 1.11.0 |
+| `mock-api-portal-1.11.0.tar.gz.sha256` | new checksum |
+| `change.md` | round 11 section added |
+
 ## Modification in round 10
 
 Package **mock-api-portal-1.10.0.tar.gz**, compared with **mock-api-portal-1.9.0.tar.gz**.

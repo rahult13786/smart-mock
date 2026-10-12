@@ -334,3 +334,9 @@ td.right { text-align: right; }
 @media (max-width: 760px) { .grid3 { grid-template-columns: 1fr; } }
 .create-form > .wide { grid-column: 1 / -1; }
 .create-form .path-preview { margin-top: -4px; }
+.jt-icon { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border: 1px solid #c7c4f7; border-radius: 3px; font-size: 12px; line-height: 1; font-weight: 700; color: var(--accent); background: #fff; vertical-align: -2px; }
+.jt-icon.open { background: var(--accent-soft); }
+.jt-toggle:hover .jt-icon { border-color: var(--accent); }
+.label-line { display: inline-flex; gap: 6px; align-items: baseline; }
+.card.raw { padding: 14px; }
+.card.raw .tree-box { max-height: 70vh; }

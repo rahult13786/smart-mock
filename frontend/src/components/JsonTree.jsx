@@ -41,8 +41,8 @@ function TreeNode({ name, value, depth, last, openDepth }) {
   return (
     <>
       <div className="jt-row" style={{ paddingLeft: depth * 18 }}>
-        <button type="button" className="jt-toggle" onClick={toggle} disabled={!entries.length} aria-expanded={open}>
-          {entries.length ? (open ? '[V]' : '[>]') : '   '}
+        <button type="button" className="jt-toggle" onClick={toggle} disabled={!entries.length} aria-expanded={open} title={open ? 'Collapse' : 'Expand'}>
+          {entries.length ? <span className={`jt-icon ${open ? 'open' : ''}`}>{open ? '−' : '+'}</span> : '\u00a0'}
         </button>
         <span className="jt-click" onClick={toggle}>
           <Key name={name} />
