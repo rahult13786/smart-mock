@@ -556,7 +556,7 @@ When 2 or 3 happens the response carries `X-Search-Config-Updated: <paths>`, and
    that env (smadmin sees all APIs; older APIs without a base path appear under *Other*). `+` shows the base path
    from your user – `{domain}-{team}-{technology}-{role}-` read-only – plus an env drop-down (dev, st, sit), then
    name and version (smadmin picks all five parts). The API path is `/api/{base path}/{name}/{version}`.
-   Each API has a **# Records** field next to *Version* (not asked when creating, default 10): POST requests and
+   Each API has a **# Records** field next to *Version* (with the stored count in brackets, e.g. `(3 stored)`) (not asked when creating, default 10): POST requests and
    *Create mocks* are refused once that many records are stored.
    `+` asks for name and version. After creating, a text area asks for the sample
    JSON (paste or load a file). On save the API name becomes read-only and records are seeded.
@@ -630,9 +630,10 @@ When 2 or 3 happens the response carries `X-Search-Config-Updated: <paths>`, and
    * Fields with allowed values (enum) are drop-downs that only offer those values – in the page, the popups and
      the *+ Add* form. Stored values outside the list are shown in red as *(not allowed)*.
    * **Raw JSON** (page header, every list heading, and the tab in every popup) shows the JSON as a tree: each
-     object / list has `[>]` to expand and `[V]` to collapse its children (click the marker or the key); collapsed
-     nodes show their item / key count. *Edit JSON* switches to a text editor; *Save JSON* replaces the node in
-     the stored record (it must keep its kind).
+     object / list has **+** to expand and **−** to collapse its children (click the icon or the key); collapsed
+     nodes show their item / key count. *Edit JSON* switches to a text editor; *Save JSON* saves it – for the
+     whole record (page header) the changes are sent as a JSON Patch and the page shows the saved record; for a
+     list or node it replaces that node (it must keep its kind). The record id cannot be changed this way.
    * Save sends a **JSON Patch** (diff of your edits) or **JSON Merge Patch** – pick in the save bar,
      *Preview payload* shows exactly what is sent.
 

@@ -473,7 +473,7 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
               <input value={api.version} readOnly className="readonly" />
             </label>
             <label>
-              # Records <span className="muted small">{api.recordCount ?? 0} stored</span>
+              <span className="label-line"># Records <span className="muted small">({api.recordCount ?? 0} stored)</span></span>
               <div className="records-limit">
                 <input
                   type="number"

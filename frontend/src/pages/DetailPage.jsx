@@ -9,8 +9,7 @@ import ArrayTable from '../components/ArrayTable.jsx';
 import ObjectModal from '../components/ObjectModal.jsx';
 import { EditorContext } from '../components/editor.js';
 import { CopyItemModal, CopyRecordModal } from '../components/CopyModals.jsx';
-import { RawJsonModal } from '../components/RawJson.jsx';
-import JsonTree from '../components/JsonTree.jsx';
+import { RawJsonEditor, RawJsonModal } from '../components/RawJson.jsx';
 import ConfirmModal from '../components/ConfirmModal.jsx';
 
 const pathLabel = (path) => path.map((p) => (typeof p === 'number' ? `[${p}]` : humanize(p))).join(' › ') || 'Record';
@@ -173,6 +172,23 @@ export default function DetailPage() {
     }
   }
 
+  async function saveRecordJson(next) {
+    if (String(next.id) !== String(original.id)) throw new Error('The id of a record cannot be changed – use Copy record to save it under another id');
+    const ops = compare(original, next);
+    if (!ops.length) {
+      setDraft(original);
+      setEdited(new Set());
+      setNotice('Nothing changed.');
+      return;
+    }
+    const rec = await client.jsonPatch(id, ops);
+    setOriginal(rec);
+    setDraft(rec);
+    setEdited(new Set());
+    setPreview(null);
+    setNotice(`Saved raw JSON of the record (${ops.length} change${ops.length === 1 ? '' : 's'}).`);
+  }
+
   function discard() {
     setDraft(original);
     setEdited(new Set());
@@ -203,8 +219,8 @@ export default function DetailPage() {
         {notice && <div className={`alert ${notice.startsWith('Save failed') ? 'error' : 'ok'}`}>{notice}</div>}
 
         {raw ? (
-          <div className="card raw tree-box">
-            <JsonTree value={draft} />
+          <div className="card raw">
+            <RawJsonEditor value={draft} onSave={saveRecordJson} rows={32} />
           </div>
         ) : (
           <>
