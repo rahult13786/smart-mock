@@ -307,3 +307,30 @@ td.right { text-align: right; }
 .map-option input[type="radio"] { width: auto; flex: 0 0 auto; margin: 0; }
 .map-option { justify-content: flex-start; }
 .map-option .map-sample { flex: 1; min-width: 0; text-align: right; }
+
+.sidebar { display: flex; flex-direction: column; }
+.user-box { margin-top: auto; padding: 12px 10px 4px; border-top: 1px solid #2b3243; display: flex; flex-direction: column; gap: 4px; }
+.user-box .user-name { color: #fff; font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+.user-box .user-scope { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; color: #8f97a8; word-break: break-all; }
+.user-box .btn { align-self: flex-start; margin-top: 4px; color: var(--sidebar-text); border-color: #3a4153; }
+.login-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg); padding: 16px; }
+.login-card { width: 100%; max-width: 380px; padding: 28px; display: flex; flex-direction: column; gap: 14px; }
+.login-card h1 { margin: 0; font-size: 22px; }
+.login-brand { font-weight: 700; color: var(--accent); letter-spacing: .02em; }
+.login-btn { margin-top: 4px; padding: 10px; }
+.env-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 6px 0 14px; }
+.env-tabs button { background: none; border: 0; padding: 9px 18px; font: inherit; font-weight: 600; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; display: flex; gap: 8px; align-items: center; }
+.env-tabs button.on { color: var(--accent); border-bottom-color: var(--accent); }
+.base-path { display: flex; align-items: stretch; gap: 0; }
+.base-path .prefix { font-family: ui-monospace, Menlo, monospace; font-size: 13px; background: #eef0f4; border: 1px solid var(--border); border-right: 0; border-radius: 6px 0 0 6px; padding: 7px 10px; color: var(--muted); white-space: nowrap; }
+.base-path select { border-radius: 0 6px 6px 0; width: auto; }
+.scope-selects { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.scope-selects select { width: auto; }
+.path-preview { font-size: 12.5px; color: var(--muted); }
+.path-preview code { color: var(--text); }
+.records-limit { display: flex; gap: 6px; align-items: center; }
+.records-limit input { width: 90px; }
+.grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+@media (max-width: 760px) { .grid3 { grid-template-columns: 1fr; } }
+.create-form > .wide { grid-column: 1 / -1; }
+.create-form .path-preview { margin-top: -4px; }

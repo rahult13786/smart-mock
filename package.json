@@ -1,6 +1,6 @@
 {
   "name": "mock-api-portal",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "private": true,
   "scripts": {
     "install:all": "npm --prefix server install --omit=dev && npm --prefix frontend install --include=dev",

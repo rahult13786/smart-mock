@@ -3,3 +3,4 @@ frontend/dist/
 server/data/
 release/
 dist/
+.DS_Store

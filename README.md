@@ -46,7 +46,9 @@ Server env vars: `PORT` (4000), `DATA_DIR` (`server/data`), `BODY_LIMIT` (`50mb`
 `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` (or `KV_REST_API_URL` + `KV_REST_API_TOKEN`) to keep the data
 in Redis (see *Deploy*), `REMOTE_PREFIX`,
 `SEED_APIS` (optional demo data, e.g. `agreement@v1=samples/agreement.json` – registers and seeds the API on
-start if it doesn't exist; several entries separated by `;`).
+start if it doesn't exist; several entries separated by `;`; with a base path:
+`fixedline-bau-ms-dev-dev/agreement@v1=samples/agreement.json` → `/api/fixedline-bau-ms-dev-dev/agreement/v1`),
+`SMADMIN_PASSWORD` (`smadmin`) – password of the built-in `smadmin` login, `SESSION_HOURS` (12).
 Server tests: `npm test` (runs `server/test/smoke.js` against `samples/agreement.json`).
 
 ## Deploy (one project: the API server also serves the built portal)
@@ -356,8 +358,10 @@ docker run -d --name mock-api-portal -p 8080:8080 -v mock-data:/app/server/data 
 
 ## How the API is optimised by base path
 
-* Every registered API has its own base path `/api/{name}/{version}` **and its own NeDB file**
-  (`data/apis/{name}__{version}.db`), so a request only touches the data of its base path.
+* Every registered API has its own path `/api/{basePath}/{name}/{version}` **and its own NeDB file**
+  (`data/apis/{basePath}__{name}__{version}.db`), so a request only touches the data of its API. The base path is
+  `{domain}-{team}-{technology}-{role}-{env}` (e.g. `/api/fixedline-bau-ms-dev-dev/sampleapi/v1`) – base path +
+  name + version is unique. APIs registered before 1.10.0 keep their `/api/{name}/{version}` path.
 * The registry lives in memory (Map) – resolving a base path is an O(1) lookup, no DB query.
 * Datastores open lazily on first request, stay cached, and are auto-compacted.
 * Each record is stored as a JSON string plus a small index of its searchable fields and a
@@ -374,13 +378,14 @@ Unregistered base path → `404 {"error":"API not registered"}` for GET, POST an
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/api/{name}/{version}/{id}` | One record (resource path). |
-| GET | `/api/{name}/{version}?id=a,b,c` | Array of the records with those ids, in the requested order. Ids not found are listed in the `X-Not-Found-Ids` header. |
-| GET | `/api/{name}/{version}?status=x&agreementType=y` | Filter on any value path of the sample (dotted, may go through lists, e.g. `characteristic.name`). **Equality** (case-insensitive); `a,b` = a **or** b; several params = **and**. Operators: `name.like=agr` (contains), `status.ne=Closed`, `status.eq=Active`. |
-| GET | `/api/{name}/{version}` | All records (array). `X-Total-Count` header. Also `limit`, `skip`, `q` (any searchable field), `view=summary` → `{total, items}` with root scalar fields only. |
-| POST | `/api/{name}/{version}` | Object or array of objects. `id` generated when missing; `409` if the id exists. Response `201` with the **final stored record** (array for an array body) – generated ids, Create (post) values and maps included – and a `Location` header for a single record. |
-| DELETE | `/api/{name}/{version}/{id}` | Deletes the record → `{"deleted": id}`; `404` if it doesn't exist. (To remove a node *inside* a record use PATCH with a JSON Patch `remove` op.) |
-| PATCH | `/api/{name}/{version}/{id}` | **JSON Patch** (RFC 6902) with `Content-Type: application/json-patch+json` (or any array body); **JSON Merge Patch** (RFC 7396) with `Content-Type: application/merge-patch+json` (or any object body). `?mode=json-patch|merge` overrides. Response header `X-Patch-Mode`. A failed `test` op → `409`; invalid path → `422`; changing `id` → `400`. Response `200` with the **full updated record** as stored. |
+| GET | `/api/{basePath}/{name}/{version}/{id}` | One record (resource path). |
+| GET | `/api/{basePath}/{name}/{version}?id=a,b,c` | Array of the records with those ids, in the requested order. Ids not found are listed in the `X-Not-Found-Ids` header. |
+| GET | `/api/{basePath}/{name}/{version}?status=x&agreementType=y` | Filter on any value path of the sample (dotted, may go through lists, e.g. `characteristic.name`). **Equality** (case-insensitive); `a,b` = a **or** b; several params = **and**. Operators: `name.like=agr` (contains), `status.ne=Closed`, `status.eq=Active`. |
+| GET | `/api/{basePath}/{name}/{version}` | All records (array). `X-Total-Count` header. Also `limit`, `skip`, `q` (any searchable field), `view=summary` → `{total, items}` with root scalar fields only. |
+| POST | `/api/{basePath}/{name}/{version}` | Object or array of objects. `id` generated when missing; `409` if the id exists; `422 RECORD_LIMIT_REACHED` when the API already holds its *# records* limit (default 10). Response `201` with the **final stored record** (array for an array body) – generated ids, Create (post) values and maps included – and a `Location` header for a single record. |
+| DELETE | `/api/{basePath}/{name}/{version}/{id}` | Deletes the record → `{"deleted": id}`; `404` if it doesn't exist. (To remove a node *inside* a record use PATCH with a JSON Patch `remove` op.) |
+| PATCH | `/api/{basePath}/{name}/{version}/{id}` | **JSON Patch** (RFC 6902) with `Content-Type: application/json-patch+json` (or any array body); **JSON Merge Patch** (RFC 7396) with `Content-Type: application/merge-patch+json` (or any object body). `?mode=json-patch|merge` overrides. Response header `X-Patch-Mode`. A failed `test` op → `409`; invalid path → `422`; changing `id` → `400`. Response `200` with the **full updated record** as stored (the whole record, also when a list item was added); `?fields=id,name,agreementItem.id` returns only those paths (`id` always included). |
+| HEAD | `/api/{basePath}/{name}/{version}[/{id}]` | Same as GET without a body: status, `Content-Type` and `Content-Length` of the GET response (any GET query parameters work). |
 
 Examples:
 
@@ -429,7 +434,19 @@ into them (`null` removes the item):
   "characteristic": { "Contract level": { "value": "Enterprise" } } }
 ```
 
-(A plain RFC 7396 merge would replace the list with that object; sending a JSON array still replaces the list.)
+**Arrays in a Merge Patch** – when the list's items have a key marked *Unique* in the tags (e.g. `agreementItem.id`),
+a JSON array sent for that list is merged item by item instead of replacing the list: an item whose key matches an
+existing item is merged into it; an item without the key (or with an unknown key) is **added** as a new item, and
+the *Create (post)*, regex, *Map* and *Must* rules run for it exactly as for a POST / JSON Patch `op: add`:
+
+```json
+{ "agreementItem": [ { "product": [ { "id": "3-5TGLGY" } ], "characteristic": [ { "name": "Status", "value": "Awaiting approval" } ] } ] }
+```
+
+With `agreementItem.id` *Unique* + *Create (post)* and `agreementItem.stcAgreementItemBusinessId` *Create (post)* +
+*Map ← agreementItem.id`, this appends one item with a generated id and `stcAgreementItemBusinessId` = that id, and
+keeps the existing items. Lists without a unique key, and requests with `?pathMode=index` (the portal), keep plain
+RFC 7396 behaviour (the array replaces the list).
 
 ### Enum (allowed values) validation
 
@@ -505,9 +522,11 @@ When 2 or 3 happens the response carries `X-Search-Config-Updated: <paths>`, and
 
 | Method | Path | |
 |---|---|---|
-| GET | `/admin/apis` | List registered APIs (with record counts) |
-| POST | `/admin/apis` | `{name, version}` → registers `/api/{name}/{version}` |
-| GET | `/admin/apis/{name}__{version}` | One API with its tags |
+| POST | `/admin/auth/login` | `{email, password}` → `{token, user}`; `smadmin` / `smadmin` is the built-in administrator (password from `SMADMIN_PASSWORD` when set). Every other `/admin/...` call needs `Authorization: Bearer <token>` (`401 LOGIN_REQUIRED` otherwise) |
+| GET / POST | `/admin/auth/me` / `/admin/auth/logout` | Logged-in user (with `scope` = `{domain}-{team}-{technology}-{role}`) / end the session |
+| GET | `/admin/apis` | APIs the logged-in user may access (smadmin: all; a user: `{scope}-dev/st/sit`), with record counts |
+| POST | `/admin/apis` | `{name, version, env}` → registers `/api/{scope}-{env}/{name}/{version}` (smadmin also sends `domain, team, technology, role`); `409` when base path + name + version exists |
+| GET / PATCH | `/admin/apis/{key}` | One API with its tags / `{maxRecords}` – the *# records* limit (default 10). `403` for APIs outside the user's scope |
 | GET / PUT | `/admin/apis/{key}/sample` | Read / save sample JSON `{sample, seed?:true}` → stores the id tags of the sample (tags you added are kept while their path still exists), seeds records (upsert by id) |
 | PUT | `/admin/apis/{key}/tags` | `{tags:[{path, type?, searchable, unique?, enum?, must?, create?, regex?, remove?}]}` → new paths are validated against the sample (all-or-nothing, `422` with `code` PATH_NOT_IN_SAMPLE / NOT_A_VALUE / TYPE_MISMATCH), then saved and records re-indexed. `create` and `regex` apply to id tags only; an invalid regex → `400 INVALID_REGEX` |
 | GET | `/admin/apis/{key}/tags/map?path=agreementItem.productOfferingPrice.name` | Fields that can be mapped to a non-id tag (`{candidates:[{path, type, relation: sibling/parent, sample}]}`) |
@@ -519,7 +538,7 @@ When 2 or 3 happens the response carries `X-Search-Config-Updated: <paths>`, and
 | POST | `/admin/apis/{key}/mocks` | `{source, count ≤ 10, idRules:[{path, values, auto, reuse, replaceAll}], fieldRules:[{path, values, auto, reuse, filter:{key,value}}]}` |
 | GET | `/admin/apis/{key}/values?path=` | Distinct values found at a path (sample + records) – used to prefill enums |
 | DELETE | `/admin/apis/{key}` | Removes the API and its data file |
-| GET / POST | `/admin/users` | Users (password always `******`) / create `{firstName, lastName, email, password?}` – the password is generated with Node `crypto` (16 characters) |
+| GET / POST | `/admin/users` | **smadmin only** (also folders). Users (password always `******`) / create `{firstName, lastName, email, domain, team, technology, role, password?}` – the password is generated with Node `crypto` (16 characters) |
 | GET | `/admin/users/password` | A newly generated password (shown in the *New user* form) |
 | GET | `/admin/users/{id}/password` | The user's password (used by the copy icon) |
 | PATCH / DELETE | `/admin/users/{id}` | Edit `{firstName, lastName, email, active}` (password cannot be changed) / delete (also removed from folders) |
@@ -530,7 +549,16 @@ When 2 or 3 happens the response carries `X-Search-Config-Updated: <paths>`, and
 
 ## Portal
 
-1. **Register API** – `+` asks for name and version. After creating, a text area asks for the sample
+0. **Login** – every page needs a login (email + password). `smadmin` / `smadmin` is the built-in administrator; users
+   created in *Admin view* log in with their email and generated password. The session is kept in the browser
+   until *Logout* (sidebar, bottom) or 12 hours (`SESSION_HOURS`). *Admin view* is shown to smadmin only.
+1. **Register API** – three tabs **Dev**, **ST** and **SIT** list the APIs you can access whose base path ends with
+   that env (smadmin sees all APIs; older APIs without a base path appear under *Other*). `+` shows the base path
+   from your user – `{domain}-{team}-{technology}-{role}-` read-only – plus an env drop-down (dev, st, sit), then
+   name and version (smadmin picks all five parts). The API path is `/api/{base path}/{name}/{version}`.
+   Each API has a **# Records** field next to *Version* (not asked when creating, default 10): POST requests and
+   *Create mocks* are refused once that many records are stored.
+   `+` asks for name and version. After creating, a text area asks for the sample
    JSON (paste or load a file). On save the API name becomes read-only and records are seeded.
 2. **Tags** – saving the sample stores only the **id paths** (`id`, `agreementItem.id`,
    `agreementItem.productOfferingPrice.id`, … at any level); every other field is added by you with **+ Add tag**.
@@ -609,7 +637,8 @@ When 2 or 3 happens the response carries `X-Search-Config-Updated: <paths>`, and
      *Preview payload* shows exactly what is sent.
 
 5. **Admin view** (sidebar, below *Register API*) – two tabs:
-   * **Users** – first name, last name, email, active and password (always `******`), all read-only in the list,
+   * **Users** – first name, last name, email, Domain (fixedline, gsm), Team (bau, project), Technology (ms, esb,
+     portal), Role (dev, test), active and password (always `******`), all read-only in the list,
      with **Edit** (popup) and **Delete** per row and **+ New user** on top. The ⧉ icon next to the password copies
      it to the clipboard without showing it. New users get a password generated by the server (Node `crypto`);
      it cannot be edited. Emails are unique.

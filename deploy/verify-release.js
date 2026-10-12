@@ -25,9 +25,10 @@ const timer = setTimeout(() => {
   child.kill();
 }, 20000);
 
+let token = '';
 const check = async (url, test, label) => {
   try {
-    const res = await fetch(`http://127.0.0.1:${port}${url}`);
+    const res = await fetch(`http://127.0.0.1:${port}${url}`, token ? { headers: { authorization: `Bearer ${token}` } } : undefined);
     const body = await res.text();
     if (res.status !== 200 || !test(body, res)) fail(`${label}: HTTP ${res.status} ${body.slice(0, 120)}`);
     else console.log(`  ✓ ${label}`);
@@ -42,6 +43,17 @@ const wait = setInterval(async () => {
   clearTimeout(timer);
   await check('/health', (b) => JSON.parse(b).ok === true, 'GET /health');
   await check('/register', (b) => b.includes('<div id="root">'), 'portal page served');
+  const anon = await fetch(`http://127.0.0.1:${port}/admin/apis`).catch(() => null);
+  if (!anon || anon.status !== 401) fail(`GET /admin/apis without login: expected 401, got ${anon && anon.status}`);
+  else console.log('  ✓ GET /admin/apis without login is refused (401)');
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/admin/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'smadmin', password: process.env.SMADMIN_PASSWORD || 'smadmin' }) });
+    token = (await r.json()).token || '';
+    if (!token) fail('smadmin login failed');
+    else console.log('  ✓ smadmin login');
+  } catch (e) {
+    fail(`smadmin login: ${e.message}`);
+  }
   await check('/admin/apis', (b) => JSON.parse(b).length === 1, 'GET /admin/apis (demo API seeded)');
   await check('/api/agreement/v1?fields=id,status', (b) => JSON.parse(b)[0]?.id, 'GET /api/agreement/v1?fields=id,status');
   child.kill();

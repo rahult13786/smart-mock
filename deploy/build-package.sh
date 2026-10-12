@@ -87,7 +87,7 @@ cat > release/DEPLOY.md <<EOS
 # Mock API Portal $VERSION – deployment
 
 Built $BUILT_AT (commit $GIT_COMMIT). Portal + API run in one Node.js process on one port (8080).
-Health check: \`GET /health\`. Data: files in \`DATA_DIR\` (image default \`/opt/mock-api-portal/server/data\`;
+Health check: \`GET /health\`. Portal login: \`smadmin\` / \`smadmin\` (set \`SMADMIN_PASSWORD\`). Data: files in \`DATA_DIR\` (image default \`/opt/mock-api-portal/server/data\`;
 the OpenShift Deployment mounts its volume at \`/data\` and sets \`DATA_DIR=/data\`) – keep it on a volume.
 
 Files to deploy (all in the same folder):
@@ -130,6 +130,8 @@ Other base image (mirror / UBI): \`--build-arg NODE_IMAGE=<registry>/node:22-alp
 | SEED_APIS | – | demo data, e.g. agreement@v1=samples/agreement.json |
 | UPSTASH_REDIS_REST_URL / _TOKEN | – | keep data in Redis instead (hosts without a disk) |
 | BODY_LIMIT | 50mb | max request size |
+| SMADMIN_PASSWORD | smadmin | password of the built-in \`smadmin\` portal login – change it |
+| SESSION_HOURS | 12 | portal login session length |
 EOS
 
 step "4/6 installing server dependencies (production only)"

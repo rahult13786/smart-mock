@@ -10,6 +10,18 @@ const FOLDER_OPTIONS = {
   technology: ['ms', 'esb'],
 };
 const FOLDER_FIELDS = Object.keys(FOLDER_OPTIONS);
+const USER_OPTIONS = {
+  domain: ['fixedline', 'gsm'],
+  team: ['bau', 'project'],
+  technology: ['ms', 'esb', 'portal'],
+  role: ['dev', 'test'],
+};
+const USER_SCOPE = Object.keys(USER_OPTIONS);
+const ENVS = ['dev', 'st', 'sit'];
+const ADMIN_LOGIN = 'smadmin';
+const ADMIN_PASSWORD = () => process.env.SMADMIN_PASSWORD || 'smadmin';
+const SESSION_HOURS = Number(process.env.SESSION_HOURS || 12);
+const ADMIN_USER = { _id: ADMIN_LOGIN, firstName: 'SM', lastName: 'Admin', email: ADMIN_LOGIN, role: ADMIN_LOGIN, active: true, isAdmin: true };
 
 const LOWER = 'abcdefghijkmnopqrstuvwxyz';
 const UPPER = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -43,6 +55,10 @@ const publicUser = (u) => ({
   firstName: u.firstName,
   lastName: u.lastName,
   email: u.email,
+  domain: u.domain || '',
+  team: u.team || '',
+  technology: u.technology || '',
+  role: u.role || '',
   active: !!u.active,
   password: MASK,
   createdAt: u.createdAt,
@@ -57,6 +73,15 @@ async function checkUser(body, users, selfId) {
     .map(([, label]) => label);
   if (missing.length) throw { status: 400, code: 'REQUIRED', message: `${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} required` };
   if (!EMAIL.test(user.email)) throw { status: 400, code: 'INVALID_EMAIL', message: `"${user.email}" is not a valid email address` };
+  if (user.email === ADMIN_LOGIN) throw { status: 409, code: 'EMAIL_EXISTS', message: `"${ADMIN_LOGIN}" is reserved` };
+  const problems = [];
+  for (const k of USER_SCOPE) {
+    const v = text(body[k]).toLowerCase();
+    if (!v) problems.push(`${k} is required`);
+    else if (!USER_OPTIONS[k].includes(v)) problems.push(`${k} must be one of ${USER_OPTIONS[k].join(', ')}`);
+    user[k] = v;
+  }
+  if (problems.length) throw { status: 400, code: 'INVALID_USER', message: problems.join('; '), problems };
   const clash = await users.findOneAsync({ email: user.email });
   if (clash && clash._id !== selfId) throw { status: 409, code: 'EMAIL_EXISTS', message: `A user with email ${user.email} already exists` };
   return user;
@@ -70,6 +95,105 @@ async function withUsers(folder) {
   return { ...folder, users: list.map(publicUser).sort(byName) };
 }
 
+const scopePrefix = (u) => (u && !u.isAdmin ? USER_SCOPE.map((k) => u[k]).join('-') : null);
+
+function canAccess(user, api) {
+  if (!user) return false;
+  if (user.isAdmin) return true;
+  if (!api.group) return false;
+  const prefix = scopePrefix(user);
+  return ENVS.some((env) => api.group === `${prefix}-${env}`);
+}
+
+function sessionUser(u) {
+  if (u.isAdmin) return { ...ADMIN_USER, scope: null, envs: ENVS };
+  return { ...publicUser(u), isAdmin: false, scope: scopePrefix(u), envs: ENVS };
+}
+
+const equal = (a, b) => {
+  const x = Buffer.from(String(a));
+  const y = Buffer.from(String(b));
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+};
+
+const bearer = (req) => {
+  const h = String(req.headers.authorization || '');
+  return h.toLowerCase().startsWith('bearer ') ? h.slice(7).trim() : '';
+};
+
+async function resolveSession(token) {
+  if (!token) return null;
+  const sessions = await store.getCollection('sessions');
+  const s = await sessions.findOneAsync({ _id: token });
+  if (!s) return null;
+  if (Date.parse(s.expiresAt) < Date.now()) {
+    await sessions.removeAsync({ _id: token }, {});
+    return null;
+  }
+  if (s.userId === ADMIN_LOGIN) return sessionUser(ADMIN_USER);
+  const users = await store.getCollection('users');
+  const u = await users.findOneAsync({ _id: s.userId });
+  return u && u.active ? sessionUser(u) : null;
+}
+
+const authenticate = (req, res, next) =>
+  resolveSession(bearer(req)).then((user) => {
+    if (!user) return res.status(401).json({ error: 'Login required', code: 'LOGIN_REQUIRED' });
+    req.user = user;
+    next();
+  }, next);
+
+const requireAdmin = (req, res, next) => (req.user?.isAdmin ? next() : res.status(403).json({ error: 'Only smadmin can do this', code: 'ADMIN_ONLY' }));
+
+const authRouter = express.Router();
+
+authRouter.post(
+  '/auth/login',
+  wrap(async (req, res) => {
+    const login = text(req.body?.email).toLowerCase();
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    if (!login || !password) throw { status: 400, code: 'REQUIRED', message: 'Email and password are required' };
+    let user = null;
+    if (login === ADMIN_LOGIN) {
+      if (equal(password, ADMIN_PASSWORD())) user = ADMIN_USER;
+    } else {
+      const users = await store.getCollection('users');
+      const u = await users.findOneAsync({ email: login });
+      if (u && equal(password, u.password)) {
+        if (!u.active) throw { status: 403, code: 'INACTIVE', message: 'This user is inactive' };
+        user = u;
+      }
+    }
+    if (!user) throw { status: 401, code: 'BAD_LOGIN', message: 'Wrong email or password' };
+    const sessions = await store.getCollection('sessions');
+    await sessions.removeAsync({ expiresAt: { $lt: new Date().toISOString() } }, { multi: true });
+    const token = crypto.randomBytes(32).toString('base64url');
+    const now = Date.now();
+    await sessions.insertAsync({ _id: token, userId: user._id, createdAt: new Date(now).toISOString(), expiresAt: new Date(now + SESSION_HOURS * 3600e3).toISOString() });
+    res.json({ token, user: sessionUser(user), expiresInHours: SESSION_HOURS });
+  })
+);
+
+authRouter.get(
+  '/auth/me',
+  wrap(async (req, res) => {
+    const user = await resolveSession(bearer(req));
+    if (!user) return res.status(401).json({ error: 'Login required', code: 'LOGIN_REQUIRED' });
+    res.json(user);
+  })
+);
+
+authRouter.post(
+  '/auth/logout',
+  wrap(async (req, res) => {
+    const token = bearer(req);
+    if (token) await (await store.getCollection('sessions')).removeAsync({ _id: token }, {});
+    res.json({ ok: true });
+  })
+);
+
+authRouter.get('/auth/options', (_req, res) => res.json({ ...USER_OPTIONS, env: ENVS }));
+
 const router = express.Router();
 
 router.get(
@@ -79,6 +203,8 @@ router.get(
     res.json((await users.findAsync({})).map(publicUser).sort(byName));
   })
 );
+
+router.get('/users/options', (_req, res) => res.json(USER_OPTIONS));
 
 router.get('/users/password', (_req, res) => res.json({ password: generatePassword() }));
 
@@ -218,4 +344,4 @@ router.delete(
   })
 );
 
-module.exports = { router, generatePassword, FOLDER_OPTIONS };
+module.exports = { router, authRouter, authenticate, requireAdmin, canAccess, scopePrefix, generatePassword, FOLDER_OPTIONS, USER_OPTIONS, ENVS, ADMIN_LOGIN };
