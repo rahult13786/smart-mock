@@ -3,6 +3,72 @@
 Each section lists the files inside `mock-api-portal-<version>.tar.gz` (top folder `mock-api-portal/`) that
 changed compared with the previous package. `node_modules` is summarised by package.
 
+## Modification in round 12
+
+Package **mock-api-portal-1.12.0.tar.gz**, compared with **mock-api-portal-1.11.0.tar.gz**.
+
+### Changes in this round
+
+1. **Configurable user values** – Domain, Team, Technology and Role are no longer fixed lists. *Admin view →
+   Configurations* (replaces the *Folders* tab) shows a TYPE / VALUES list (DOMAIN, TEAM, TECHNOLOGY, ROLE); smadmin
+   adds values with *+ New value* and deletes values no user has. The user form (create / edit), the user validation
+   and the API registration (base path) use these values. Defaults seeded on first start: DOMAIN fixedline, gsm ·
+   TEAM bau, project · TECHNOLOGY ms, esb, portal · ROLE dev, test. Values: lower-case letters, digits, `_`.
+2. **Analytics tab** (*Admin view → Analytics*) – every mock API request (`/api/…`, `/apis/…`) is recorded with the
+   `morgan` request logger. One row per API, most used first: *API requests*, *Successful requests* (status < 400),
+   *Failed requests* (status ≥ 400), average response time, requests per method, last request; totals on top,
+   auto-refresh every 10 s, *Reset*. Counters are kept in NeDB (`admin/analytics.db`).
+3. The folder feature (tab, `/admin/folders` endpoints) is removed; existing folder data is left untouched on disk.
+
+### Added
+
+| File | Why |
+|---|---|
+| `server/src/analytics.js` | morgan logger, per-API counters (saved in NeDB), `GET` / `DELETE /admin/analytics` |
+| `server/node_modules/morgan` (1.12.1) + `basic-auth` 2.0.1, `safe-buffer` 5.1.2, `on-headers` 1.1.0 | request logging for Analytics |
+| `frontend/dist/assets/index--Z-SV9Bp.js` | rebuilt portal: Configurations and Analytics tabs (replaces `index-B8F6UI_B.js`) |
+| `frontend/dist/assets/index-B9nhcY2p.css` | rebuilt portal styles (replaces `index-MNGDbV4Y.css`) |
+
+### Modified
+
+| File | Why |
+|---|---|
+| `server/src/accounts.js` | user values from the `configs` collection (seeded with defaults), `/admin/configurations` endpoints, folder endpoints removed |
+| `server/src/index.js` | morgan logger mounted, analytics routes (smadmin only), API registration checks the configured values, analytics saved on shutdown |
+| `server/src/store.js` | NeDB collections `configs` and `analytics` (also synced to Redis) |
+| `server/package.json` | version 1.12.0, dependency `morgan` |
+| `server/package-lock.json` | `morgan` and its dependencies |
+| `frontend/dist/index.html` | references the rebuilt assets |
+| `DEPLOY.md` | version 1.12.0 |
+| `build-info.json` | version 1.12.0, build time |
+| `change.md` | this section |
+
+### Removed
+
+| File | Why |
+|---|---|
+| `frontend/dist/assets/index-B8F6UI_B.js` | replaced by the rebuilt portal |
+| `frontend/dist/assets/index-MNGDbV4Y.css` | replaced by the rebuilt portal |
+
+### Unchanged
+
+`start.sh`, `openshift/*`, `samples/agreement.json`, `server/data/`,
+`server/src/{generate,patch,remote,tags,enums,mockgen,query}.js`, all other `server/node_modules` packages.
+
+### Upgrade notes
+
+* Existing users keep their values; the defaults above are created the first time the configuration is read.
+* Requests are counted from the moment 1.12.0 runs; earlier traffic is not known.
+
+### Files next to the .tar
+
+| File | Change |
+|---|---|
+| `Dockerfile` | `PACKAGE` points to `mock-api-portal-1.12.0.tar.gz` |
+| `DEPLOY.md` | version 1.12.0 |
+| `mock-api-portal-1.12.0.tar.gz.sha256` | new checksum |
+| `change.md` | round 12 section added |
+
 ## Modification in round 11
 
 Package **mock-api-portal-1.11.0.tar.gz**, compared with **mock-api-portal-1.10.0.tar.gz**.

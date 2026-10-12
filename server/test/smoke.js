@@ -594,31 +594,26 @@ const step = async (name, fn) => {
       assert.equal((await req('GET', '/admin/users')).json.length, 1);
     });
 
-    await step('admin folders: unique name, user association', async () => {
-      const opts = (await req('GET', '/admin/folders/options')).json;
-      assert.deepEqual(opts.domain, ['fixedline', 'gsm']);
-      const body = { domain: 'fixedline', env: 'dev', team: 'bau', role: 'dev', technology: 'ms' };
-      assert.equal((await req('POST', '/admin/folders', { ...body, env: 'prod' })).status, 400);
-      assert.equal((await req('POST', '/admin/folders', { ...body, team: '' })).status, 400);
-      const f = await req('POST', '/admin/folders', body);
-      assert.equal(f.status, 201, JSON.stringify(f.json));
-      assert.equal(f.json.name, 'fixedline-dev-bau-dev-ms');
-      const dup = await req('POST', '/admin/folders', body);
-      assert.equal(dup.status, 409);
-      assert.equal(dup.json.code, 'FOLDER_EXISTS');
-      const fid = encodeURIComponent(f.json._id);
-      const u2 = (await req('POST', '/admin/users', { firstName: 'Second', lastName: 'User', email: 's@example.com', ...SC })).json;
-      assert.equal((await req('PUT', `/admin/folders/${fid}/users`, { userIds: ['missing'] })).status, 400);
-      const a = await req('PUT', `/admin/folders/${fid}/users`, { userIds: [userId, u2._id] });
-      assert.equal(a.status, 200, JSON.stringify(a.json));
-      assert.equal(a.json.users.length, 2);
-      assert.ok(a.json.users.every((u) => u.password === '******'));
-      assert.equal((await req('GET', '/admin/folders')).json[0].userCount, 2);
-      const ed = await req('PUT', `/admin/folders/${fid}/users`, { userIds: [userId] });
-      assert.deepEqual(ed.json.users.map((u) => u._id), [userId]);
-      await req('PUT', `/admin/folders/${fid}/users`, { userIds: [userId, u2._id] });
-      await req('DELETE', `/admin/users/${u2._id}`);
-      assert.deepEqual((await req('GET', `/admin/folders/${fid}`)).json.userIds, [userId]);
+    await step('configurations: values for Domain / Team / Technology / Role are configurable', async () => {
+      const list = (await req('GET', '/admin/configurations')).json;
+      assert.deepEqual(list.map((c) => `${c.type}:${c.value}`), ['DOMAIN:fixedline', 'DOMAIN:gsm', 'TEAM:bau', 'TEAM:project', 'TECHNOLOGY:ms', 'TECHNOLOGY:esb', 'TECHNOLOGY:portal', 'ROLE:dev', 'ROLE:test']);
+      assert.equal(list.find((c) => c.value === 'fixedline').usedBy, 1);
+      assert.equal((await req('POST', '/admin/configurations', { type: 'COLOR', value: 'x' })).json.code, 'INVALID_TYPE');
+      assert.equal((await req('POST', '/admin/configurations', { type: 'DOMAIN', value: 'fixed line' })).json.code, 'INVALID_VALUE');
+      const add = await req('POST', '/admin/configurations', { type: 'domain', value: 'Wholesale' });
+      assert.equal(add.status, 201, JSON.stringify(add.json));
+      assert.equal(add.json.value, 'wholesale');
+      assert.equal((await req('POST', '/admin/configurations', { type: 'DOMAIN', value: 'wholesale' })).status, 409);
+      assert.ok((await req('GET', '/admin/users/options')).json.domain.includes('wholesale'));
+      assert.ok((await req('GET', '/admin/auth/options')).json.domain.includes('wholesale'));
+      const u = await req('POST', '/admin/users', { firstName: 'W', lastName: 'S', email: 'w@example.com', ...SC, domain: 'wholesale' });
+      assert.equal(u.status, 201, JSON.stringify(u.json));
+      assert.equal((await req('DELETE', '/admin/configurations/DOMAIN:wholesale')).json.code, 'CONFIG_IN_USE');
+      await req('DELETE', `/admin/users/${u.json._id}`);
+      assert.equal((await req('DELETE', '/admin/configurations/DOMAIN:wholesale')).status, 200);
+      assert.equal((await req('POST', '/admin/users', { firstName: 'W', lastName: 'S', email: 'w@example.com', ...SC, domain: 'wholesale' })).status, 400);
+      const api = await req('POST', '/admin/apis', { name: 'x', version: 'v1', ...SC, domain: 'wholesale', env: 'dev' });
+      assert.equal(api.status, 400);
     });
 
     await step('users: scope fields required; normal user logs in and sees only own APIs', async () => {
@@ -635,7 +630,8 @@ const step = async (name, fn) => {
       assert.equal(login.json.user.isAdmin, false);
       token = login.json.token;
       assert.equal((await req('GET', '/admin/users')).status, 403);
-      assert.equal((await req('GET', '/admin/folders')).status, 403);
+      assert.equal((await req('GET', '/admin/configurations')).status, 403);
+      assert.equal((await req('GET', '/admin/analytics')).status, 403);
       assert.equal((await req('GET', '/admin/apis')).json.length, 0);
       assert.equal((await req('GET', '/admin/apis/fixedline-bau-ms-dev-dev__agreement__v1')).status, 403);
       const c = await req('POST', '/admin/apis', { name: 'sampleapi', version: 'v1', env: 'sit', domain: 'fixedline' });
@@ -718,6 +714,31 @@ const step = async (name, fn) => {
       await req('PUT', T, { tags: [{ path: 'agreementItem.id', unique: false, create: false }, { path: 'agreementItem.stcAgreementItemBusinessId', create: false, map: null }] });
     });
 
+    await step('analytics (morgan): requests, successful and failed per API, most used first', async () => {
+      await new Promise((r) => setTimeout(r, 100));
+      const before = (await req('GET', '/admin/analytics')).json;
+      assert.ok(before.apis.length >= 3);
+      const base = '/api/gsm-project-portal-test-sit/sampleapi/v1';
+      const main = '/api/fixedline-bau-ms-dev-dev/agreement/v1';
+      const count = (r, k) => (r.apis.find((a) => a.basePath === k) || { requests: 0, success: 0, failed: 0 });
+      const b0 = count(before, base);
+      for (let i = 0; i < 3; i++) await fetch(BASE + `${base}/S-1`);
+      await fetch(BASE + `${base}/nope`);
+      await fetch(BASE + base, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{bad json' });
+      await fetch(BASE + '/api/not/registered/at-all');
+      await new Promise((r) => setTimeout(r, 100));
+      const after = (await req('GET', '/admin/analytics')).json;
+      const b1 = count(after, base);
+      assert.equal(b1.requests - b0.requests, 5);
+      assert.equal(b1.success - b0.success, 3);
+      assert.equal(b1.failed - b0.failed, 2);
+      assert.ok(b1.avgMs >= 0 && b1.methods.GET >= 4);
+      assert.ok(after.apis.some((a) => a.key === '__unregistered__' && a.failed >= 1));
+      for (let i = 1; i < after.apis.length; i++) assert.ok(after.apis[i - 1].requests >= after.apis[i].requests);
+      assert.equal(after.apis[0].basePath, main);
+      assert.ok(!after.apis.some((a) => a.basePath.startsWith('/admin')));
+    });
+
     await step('persisted across restart', async () => {
       srv.kill();
       await new Promise((r) => srv.on('exit', r));
@@ -729,8 +750,9 @@ const step = async (name, fn) => {
       const g = (await req('GET', `/api/fixedline-bau-ms-dev-dev/agreement/v1/${id}`)).json;
       assert.equal(g.description, 'enum ok');
       assert.equal((await req('GET', '/admin/users')).json.length, 2);
-      assert.equal((await req('GET', '/admin/folders')).json[0].name, 'fixedline-dev-bau-dev-ms');
+      assert.ok((await req('GET', '/admin/analytics')).json.total.requests > 0);
       srv2.kill();
+      await new Promise((r) => srv2.on('exit', r));
     });
 
     console.log(`\n${passed} checks passed`);
@@ -739,6 +761,6 @@ const step = async (name, fn) => {
     process.exitCode = 1;
   } finally {
     srv.kill();
-    fs.rmSync(DATA_DIR, { recursive: true, force: true });
+    fs.rmSync(DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 })();

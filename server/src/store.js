@@ -11,7 +11,7 @@ const DATA_DIR = process.env.DATA_DIR || (process.env.VERCEL ? '/tmp/mock-api-da
 const API_DIR = path.join(DATA_DIR, 'apis');
 const SAMPLE_DIR = path.join(DATA_DIR, 'samples');
 const ADMIN_DIR = path.join(DATA_DIR, 'admin');
-const COLLECTIONS = ['users', 'folders', 'sessions'];
+const COLLECTIONS = ['users', 'configs', 'sessions', 'analytics'];
 const DEFAULT_MAX_RECORDS = 10;
 fs.mkdirSync(API_DIR, { recursive: true });
 fs.mkdirSync(ADMIN_DIR, { recursive: true });

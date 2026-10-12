@@ -83,12 +83,11 @@ export const accounts = {
   createUser: (user) => request('POST', '/admin/users', user),
   updateUser: (id, user) => request('PATCH', `/admin/users/${enc(id)}`, user),
   removeUser: (id) => request('DELETE', `/admin/users/${enc(id)}`),
-  folderOptions: () => request('GET', '/admin/folders/options'),
-  folders: () => request('GET', '/admin/folders'),
-  folder: (id) => request('GET', `/admin/folders/${enc(id)}`),
-  createFolder: (folder) => request('POST', '/admin/folders', folder),
-  setFolderUsers: (id, userIds) => request('PUT', `/admin/folders/${enc(id)}/users`, { userIds }),
-  removeFolder: (id) => request('DELETE', `/admin/folders/${enc(id)}`),
+  configurations: () => request('GET', '/admin/configurations'),
+  addConfiguration: (type, value) => request('POST', '/admin/configurations', { type, value }),
+  removeConfiguration: (id) => request('DELETE', `/admin/configurations/${enc(id)}`),
+  analytics: () => request('GET', '/admin/analytics'),
+  resetAnalytics: () => request('DELETE', '/admin/analytics'),
 };
 
 export const data = (basePath) => ({
