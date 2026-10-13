@@ -80,7 +80,7 @@ const format = (tokens, req, res) => {
 };
 
 const logger = morgan(format, {
-  skip: (req) => !/^\/apis?(\/|$)/.test(req.originalUrl),
+  skip: (req) => !/^\/apis?(\/|$)/.test(req.originalUrl) || String(req.headers['x-mock-portal'] || '') === '1',
   stream: {
     write: (line) => {
       try {

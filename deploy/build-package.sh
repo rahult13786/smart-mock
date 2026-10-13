@@ -58,6 +58,7 @@ cp -R samples release/samples
 cp deploy/release.Dockerfile release/Dockerfile
 cp openshift/mock-api-portal.yaml openshift/simple-build.yaml release/openshift/
 [ -f change.md ] && cp change.md release/change.md
+cp USER_MANUAL.md release/USER_MANUAL.md
 
 cat > release/start.sh <<'EOS'
 #!/bin/sh
@@ -158,6 +159,7 @@ if [ "$ARCHIVE" = yes ]; then
   sed "s/__VERSION__/$VERSION/" deploy/package.Dockerfile > dist/Dockerfile
   cp release/DEPLOY.md dist/DEPLOY.md
   [ -f release/change.md ] && cp release/change.md dist/change.md
+  cp release/USER_MANUAL.md dist/USER_MANUAL.md
   if command -v sha256sum >/dev/null 2>&1; then
     (cd dist && sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
   else

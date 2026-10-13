@@ -739,6 +739,94 @@ const step = async (name, fn) => {
       assert.ok(!after.apis.some((a) => a.basePath.startsWith('/admin')));
     });
 
+    await step('records without an id: sample, mocks and delete', async () => {
+      const make = await req('POST', '/admin/apis', { name: 'noid', version: 'v1', ...SC, env: 'dev' });
+      assert.equal(make.status, 201, JSON.stringify(make.json));
+      const K = 'fixedline-bau-ms-dev-dev__noid__v1';
+      const base = '/api/fixedline-bau-ms-dev-dev/noid/v1';
+      await req('PATCH', `/admin/apis/${K}`, { maxRecords: 50 });
+      await req('PUT', `/admin/apis/${K}/sample`, { sample: [{ name: 'a', value: 1 }, { Name: 'b', code: 'X' }] });
+      await req('PUT', `/admin/apis/${K}/sample`, { sample: (await req('GET', `/admin/apis/${K}/sample`)).json });
+      let list = (await req('GET', `${base}?view=summary`)).json;
+      assert.equal(list.total, 2);
+      assert.ok(list.items.every((r) => r.id));
+      const mocks = await req('POST', `/admin/apis/${K}/mocks`, { source: 'sample:0', count: 2, fieldRules: [{ path: 'name', auto: true }] });
+      assert.equal(mocks.status, 201, JSON.stringify(mocks.json));
+      assert.ok(mocks.json.created.every((c) => c.id && c.id !== 'undefined'));
+      list = (await req('GET', `${base}?view=summary`)).json;
+      assert.equal(list.total, 4);
+      for (const r of list.items) assert.equal((await req('DELETE', `${base}/${r.id}`)).status, 200);
+      assert.equal((await req('GET', `${base}?view=summary`)).json.total, 0);
+    });
+
+    await step('PATCH several records (no id in URL) + Array patch (sync)', async () => {
+      const K = 'fixedline-bau-ms-dev-dev__resource__v1';
+      const base = '/api/fixedline-bau-ms-dev-dev/resource/v1';
+      assert.equal((await req('POST', '/admin/apis', { name: 'resource', version: 'v1', ...SC, env: 'dev' })).status, 201);
+      const chars = (n) => [
+        { name: 'name', value: n },
+        { name: 'vale', value: '**' },
+        { name: 'type', value: 'New' },
+        { name: 'SubType', value: 'New' },
+        { name: 'availability', value: '0' },
+      ];
+      const sample = [
+        { id: '899660111002847564', resourceCharacteristic: chars('352353280000055268284') },
+        { id: '899660111002847564434323', operationalState: 'primary', resourceCharacteristic: chars('3232352353280000055268284') },
+      ];
+      const reset = () => req('PUT', `/admin/apis/${K}/sample`, { sample });
+      await reset();
+      await req('PUT', `/admin/apis/${K}/tags`, { tags: [{ path: 'id', create: false }] });
+      const incoming = ['899660111002847564', '899660111002847564434323'].map((id) => ({
+        id,
+        operationalState: 'finalize',
+        resourceCharacteristic: [
+          { name: 'namexyz', value: '352353280000055268284' },
+          { name: 'valexyz', value: '**' },
+          { name: 'type', value: 'Modify' },
+        ],
+      }));
+      const run = () => req('PATCH', base, incoming);
+      let r = await run();
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      assert.equal(r.headers.get('x-array-patch'), 'merge');
+      assert.ok(Array.isArray(r.json) && r.json.length === 2);
+      assert.deepEqual(r.json.map((x) => x.operationalState), ['finalize', 'finalize']);
+      assert.deepEqual(r.json.map((x) => x.resourceCharacteristic.length), [8, 8]);
+      assert.deepEqual(r.json, (await req('GET', `${base}?id=899660111002847564,899660111002847564434323`)).json);
+      await reset();
+      const u = await req('PUT', `/admin/apis/${K}/tags`, { tags: [{ path: 'resourceCharacteristic.name', type: 'string', unique: true }] });
+      assert.equal(u.status, 200, JSON.stringify(u.json));
+      r = await run();
+      assert.deepEqual(r.json.map((x) => x.resourceCharacteristic.length), [7, 7]);
+      assert.equal(r.json[0].resourceCharacteristic.find((c) => c.name === 'type').value, 'Modify');
+      assert.equal(r.json[0].resourceCharacteristic.find((c) => c.name === 'SubType').value, 'New');
+      await reset();
+      assert.equal((await req('PATCH', `/admin/apis/${K}`, { arraySync: true })).json.arraySync, true);
+      r = await run();
+      assert.equal(r.headers.get('x-array-patch'), 'sync');
+      assert.deepEqual(r.json.map((x) => x.resourceCharacteristic.length), [3, 3]);
+      await reset();
+      const one = await req('PATCH', `${base}/899660111002847564`, { resourceCharacteristic: [{ name: 'only', value: '1' }] }, { 'content-type': 'application/merge-patch+json' });
+      assert.deepEqual(one.json.resourceCharacteristic, [{ name: 'only', value: '1' }]);
+      assert.equal((await req('PATCH', base, [{ id: 'missing-1', a: 1 }])).status, 404);
+      assert.equal((await req('PATCH', base, [{ a: 1 }])).json.code, 'ID_REQUIRED');
+      assert.equal((await req('PATCH', base, [{ op: 'add', path: '/a', value: 1 }], { 'content-type': 'application/json-patch+json' })).json.code, 'JSON_PATCH_NEEDS_ID');
+      const single = await req('PATCH', `${base}?fields=operationalState`, { id: '899660111002847564434323', operationalState: 'x' });
+      assert.deepEqual(single.json, { id: '899660111002847564434323', operationalState: 'x' });
+    });
+
+    await step('analytics leaves out calls made by the portal', async () => {
+      await new Promise((r) => setTimeout(r, 100));
+      const base = '/api/gsm-project-portal-test-sit/sampleapi/v1';
+      const n = async () => ((await req('GET', '/admin/analytics')).json.apis.find((a) => a.basePath === base) || { requests: 0 }).requests;
+      const before = await n();
+      await fetch(BASE + `${base}/S-1`, { headers: { 'x-mock-portal': '1' } });
+      await fetch(BASE + `${base}/S-1`);
+      await new Promise((r) => setTimeout(r, 100));
+      assert.equal((await n()) - before, 1);
+    });
+
     await step('persisted across restart', async () => {
       srv.kill();
       await new Promise((r) => srv.on('exit', r));

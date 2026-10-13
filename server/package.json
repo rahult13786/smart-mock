@@ -1,6 +1,6 @@
 {
   "name": "lookup-portal-api",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "private": true,
   "description": "NeDB-backed mock API server: register APIs by basePath, then GET/POST/PATCH JSON records",
   "main": "src/index.js",

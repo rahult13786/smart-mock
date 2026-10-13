@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { admin, data } from '../api.js';
 
@@ -23,6 +23,9 @@ export default function MockModal({ api, onClose, onCreated }) {
   const [confirm, setConfirm] = useState(null);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState(null);
+  const [idsOpen, setIdsOpen] = useState(true);
+  const fieldsEnd = useRef(null);
+  const [focusRow, setFocusRow] = useState(null);
 
   useEffect(() => {
     const onKey = (e) => e.key === 'Escape' && onClose();
@@ -65,6 +68,32 @@ export default function MockModal({ api, onClose, onCreated }) {
 
   const updId = (i, patch) => { setIdRules(idRules.map((r, j) => (j === i ? { ...r, ...patch } : r))); setConfirm(null); };
   const updField = (i, patch) => { setFieldRules(fieldRules.map((r, j) => (j === i ? { ...r, ...patch } : r))); setConfirm(null); };
+
+  const ruleProblem = (r) => {
+    const f = fieldsByPath.get(r.path);
+    if (!r.path.trim()) return 'choose a field path';
+    if (!f) return `"${r.path}" is not a field of the template`;
+    if (f.listPath && !(r.filterKey === ALL || (r.filterKey && r.filterValue !== ''))) return `choose the filter of "${r.path}"`;
+    if (!r.reuse && !r.auto && !r.text.trim()) return `enter new values, Reuse or Auto-generate for "${r.path}"`;
+    return null;
+  };
+  const pending = fieldRules.map(ruleProblem).find(Boolean);
+
+  function addField() {
+    if (pending) return;
+    setFieldRules([...fieldRules, { path: '', text: '', auto: true, reuse: false, filterKey: '', filterValue: '' }]);
+    setFocusRow(fieldRules.length);
+  }
+
+  useEffect(() => {
+    if (focusRow === null) return;
+    const t = setTimeout(() => {
+      fieldsEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      document.querySelector(`.mock-fields tbody tr:nth-child(${focusRow + 1}) input[list]`)?.focus();
+      setFocusRow(null);
+    }, 30);
+    return () => clearTimeout(t);
+  }, [focusRow]);
 
   function check() {
     const errors = [];
@@ -183,7 +212,14 @@ export default function MockModal({ api, onClose, onCreated }) {
 
               {plan && (
                 <>
-                  <h4>Id fields</h4>
+                  <button type="button" className="mock-section-toggle" onClick={() => setIdsOpen((o) => !o)} aria-expanded={idsOpen}>
+                    <span className={`jt-icon ${idsOpen ? 'open' : ''}`}>{idsOpen ? '−' : '+'}</span>
+                    <h4>Id fields</h4>
+                    <span className="count">{idRules.length}</span>
+                    {!idsOpen && <span className="muted small">{idRules.filter((r) => r.reuse).length} reused · {idRules.filter((r) => !r.reuse && r.auto).length} auto-generated</span>}
+                  </button>
+                  {idsOpen && idRules.length === 0 && <p className="muted small">The template has no id fields – every mock gets a generated record id.</p>}
+                  {idsOpen && idRules.length > 0 && (
                   <div className="table-wrap">
                     <table className="grid mock-table">
                       <thead>
@@ -232,7 +268,8 @@ export default function MockModal({ api, onClose, onCreated }) {
                       </tbody>
                     </table>
                   </div>
-                  {idRules.some((r) => r.distinct > 1) && (
+                  )}
+                  {idsOpen && idRules.some((r) => r.distinct > 1) && (
                     <p className="muted small">
                       Where a path has several different ids, a typed value goes to the first one and the others get the value +
                       "-1", "-2"…; unticked rows without values keep their ids.
@@ -241,15 +278,17 @@ export default function MockModal({ api, onClose, onCreated }) {
 
                   <div className="section-head">
                     <h4>Other fields</h4>
+                    {fieldRules.length > 0 && <span className="count">{fieldRules.length}</span>}
                     <span className="spacer" />
-                    <button className="btn small" onClick={() => setFieldRules([...fieldRules, { path: '', text: '', auto: true, reuse: false, filterKey: '', filterValue: '' }])}>
+                    {pending && <span className="muted small pending-hint">Complete the field first: {pending}</span>}
+                    <button className="btn small" disabled={!!pending} title={pending ? `Complete the field first: ${pending}` : 'Add a field'} onClick={addField}>
                       + Add field
                     </button>
                   </div>
                   {fieldRules.length === 0 ? (
                     <p className="muted small">Add the fields that should differ between the mocks (e.g. status, name, characteristic.value).</p>
                   ) : (
-                    <div className="table-wrap">
+                    <div className="table-wrap mock-fields">
                       <table className="grid mock-table">
                         <thead>
                           <tr>
@@ -278,6 +317,7 @@ export default function MockModal({ api, onClose, onCreated }) {
                           ))}
                         </tbody>
                       </table>
+                      <div ref={fieldsEnd} />
                       <datalist id="mock-field-paths">
                         {(plan.fields || []).map((f) => <option key={f.path} value={f.path}>{f.type}</option>)}
                       </datalist>
@@ -324,8 +364,8 @@ function FieldRow({ rule: r, field: f, apiKey, source, onChange, onRemove, index
       qs.set('filterValue', r.filterValue);
     }
     let cancelled = false;
-    fetch(`/admin/apis/${encodeURIComponent(apiKey)}/mocks/current?${qs}`)
-      .then((res) => res.json())
+    admin
+      .mockCurrent(apiKey, qs)
       .then((c) => !cancelled && setCurrent(c))
       .catch(() => {});
     return () => {

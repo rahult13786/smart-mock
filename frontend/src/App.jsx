@@ -6,6 +6,7 @@ import ApiListPage from './pages/ApiListPage.jsx';
 import DetailPage from './pages/DetailPage.jsx';
 import AdminPage from './pages/AdminPage.jsx';
 import LoginPage from './pages/LoginPage.jsx';
+import ManualPage from './pages/ManualPage.jsx';
 import { useAuth } from './auth.jsx';
 
 const ApisContext = createContext({ apis: [], refresh: async () => {} });
@@ -48,6 +49,9 @@ function Portal({ user, logout }) {
               <span className="plus">⚙</span> Admin view
             </NavLink>
           )}
+          <NavLink to="/manual" className="nav-item manual-link">
+            <span className="plus">?</span> User manual
+          </NavLink>
           <div className="nav-heading">APIs</div>
           {apis.length === 0 && <div className="nav-empty">None registered yet</div>}
           {apis.map((a) => (
@@ -71,6 +75,7 @@ function Portal({ user, logout }) {
             <Route path="/browse/:key/records/:id" element={<DetailPage />} />
             {user.isAdmin && <Route path="/admin-view" element={<Navigate to="/admin-view/users" replace />} />}
             {user.isAdmin && <Route path="/admin-view/:tab" element={<AdminPage />} />}
+            <Route path="/manual" element={<ManualPage />} />
             <Route path="/login" element={<Navigate to="/register" replace />} />
             <Route path="*" element={<Navigate to="/register" replace />} />
           </Routes>

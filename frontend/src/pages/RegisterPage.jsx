@@ -257,14 +257,17 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
   const [mapEdit, setMapEdit] = useState(null);
   const sampleRef = useRef(null);
   const [maxRecords, setMaxRecords] = useState(api.maxRecords ?? 10);
+  const [arraySync, setArraySync] = useState(!!api.arraySync);
   useEffect(() => setMaxRecords(api.maxRecords ?? 10), [api.maxRecords]);
+  useEffect(() => setArraySync(!!api.arraySync), [api.arraySync]);
+  const settingsDirty = String(maxRecords) !== String(api.maxRecords ?? 10) || arraySync !== !!api.arraySync;
 
-  function saveMaxRecords() {
+  function saveSettings() {
     const n = Number(maxRecords);
-    if (!Number.isInteger(n) || n < 1) return setMsg({ type: 'error', text: '# Records must be a whole number of 1 or more' });
+    if (!Number.isInteger(n) || n < 1) return setMsg({ type: 'error', text: 'Max Records must be a whole number of 1 or more' });
     run(async () => {
-      await admin.update(api._id, { maxRecords: n });
-      return `# Records set to ${n} – POST requests beyond ${n} stored records are rejected.`;
+      await admin.update(api._id, { maxRecords: n, arraySync });
+      return `Saved – Max Records ${n}; Array patch (sync) ${arraySync ? 'on: PATCH replaces whole arrays' : 'off: PATCH merges array items (by unique key, otherwise appends)'}.`;
     }, 'Saved');
   }
 
@@ -463,7 +466,7 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
 
       {open && (
         <div className="api-body">
-          <div className="grid3">
+          <div className="grid2">
             <label>
               Name
               <input value={api.name} readOnly className="readonly" />
@@ -472,19 +475,26 @@ function ApiPanel({ api, open, onToggle, onChanged, onNewVersion, prefill, onPre
               Version
               <input value={api.version} readOnly className="readonly" />
             </label>
+          </div>
+          <div className="api-settings">
             <label>
-              <span className="label-line"># Records <span className="muted small">({api.recordCount ?? 0} stored)</span></span>
-              <div className="records-limit">
-                <input
-                  type="number"
-                  min="1"
-                  value={maxRecords}
-                  onChange={(e) => setMaxRecords(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && saveMaxRecords()}
-                />
-                <button className="btn small" disabled={busy || String(maxRecords) === String(api.maxRecords)} onClick={saveMaxRecords}>Save</button>
-              </div>
+              <span className="label-line">Max Records <span className="muted small">({api.recordCount ?? 0} stored)</span></span>
+              <input
+                type="number"
+                min="1"
+                value={maxRecords}
+                onChange={(e) => setMaxRecords(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && saveSettings()}
+              />
             </label>
+            <label className="check sync-check" title="On PATCH, arrays sent in the request replace the stored arrays completely">
+              <input type="checkbox" checked={arraySync} onChange={(e) => setArraySync(e.target.checked)} />
+              <span>
+                Array patch (sync)
+                <span className="muted small"> – PATCH replaces whole arrays with the ones sent</span>
+              </span>
+            </label>
+            <button className="btn small" disabled={busy || !settingsDirty} onClick={saveSettings}>Save</button>
           </div>
 
           <details className="endpoints">

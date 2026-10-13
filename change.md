@@ -3,6 +3,92 @@
 Each section lists the files inside `mock-api-portal-<version>.tar.gz` (top folder `mock-api-portal/`) that
 changed compared with the previous package. `node_modules` is summarised by package.
 
+## Modification in round 13
+
+Package **mock-api-portal-1.13.0.tar.gz**, compared with **mock-api-portal-1.12.0.tar.gz**.
+
+### Changes in this round
+
+1. **Fix – records of an API whose sample has no `id` can be deleted.** Such records always get an id now: sample
+   records get a stable id when the sample is saved (re-saving the sample no longer creates duplicates), *Create
+   mocks* gives every mock a record id, and records already stored without an id are repaired when the API is
+   opened (their stored key becomes their `id`).
+2. **Fix – Create mocks popup.**
+   * The popup body scrolls, and *Other fields* scrolls on its own with a fixed header.
+   * *+ Add field* scrolls to the new row and focuses it. It stays disabled, with the reason shown, until the
+     current field is complete (path, filter, and values / Reuse / Auto-generate).
+   * The *Current value* of a field is shown again: it did not load since the login was added.
+   * *Id fields* can be collapsed and expanded with **+** / **−**.
+3. **Fix – Analytics counts only external calls.** Calls the portal makes itself carry the header
+   `X-Mock-Portal: 1` and are no longer counted; calls from Postman and other systems are counted.
+4. **API settings** – *# Records* is renamed **Max Records** and moved to a second line of the API form, together
+   with a new **Array patch (sync)** checkbox (saved with *Save*).
+5. **PATCH enhancements.**
+   * `PATCH /api/{base}/{name}/{version}` without an id in the URL takes a list of records with their ids. Each
+     record is merged into the stored one (fields not sent stay) and the full records come back as a list.
+     All-or-nothing: an unknown id gives `404`.
+   * Arrays in merge patches: with **Array patch (sync)** on, the stored array is replaced by the array sent.
+     With it off, items are merged by the list's *Unique* key (matching items updated, the others added); without
+     a unique key all items sent are added. Added items get the Create (post), regex, Map and Must rules. This
+     applies to `PATCH …/{id}` and to the several-records PATCH.
+6. **User manual** – `USER_MANUAL.md` (in the package, next to the `.tar` and in the portal under *User manual*)
+   explains Max Records, Array patch (sync), every tag setting (Unique, Searchable, Create (post), Must, Enum,
+   Regex / Map) and every Create mocks setting (template, number of mocks, new values, Reuse, Auto generate,
+   Replace all, Filter).
+
+### Added
+
+| File | Why |
+|---|---|
+| `USER_MANUAL.md` | user manual |
+| `frontend/dist/assets/index-CN30uRnL.js` | rebuilt portal: API settings line, Create mocks fixes, User manual page (replaces `index--Z-SV9Bp.js`) |
+| `frontend/dist/assets/index-BUzK7hSP.css` | rebuilt portal styles (replaces `index-B9nhcY2p.css`) |
+
+### Modified
+
+| File | Why |
+|---|---|
+| `server/src/patch.js` | merge patch arrays: Array patch (sync) replace, merge by unique key, append without key |
+| `server/src/index.js` | PATCH of several records, shared patch logic, `arraySync` setting, sample records get stable ids |
+| `server/src/store.js` | every record gets an id, repair of records stored without one, `arraySync` default |
+| `server/src/mockgen.js` | mocks of a template without an id get a record id |
+| `server/src/analytics.js` | portal calls (`X-Mock-Portal: 1`) are not counted |
+| `server/package.json` | version 1.13.0 |
+| `server/package-lock.json` | version 1.13.0 |
+| `frontend/dist/index.html` | references the rebuilt assets |
+| `DEPLOY.md` | version 1.13.0 |
+| `build-info.json` | version 1.13.0, build time |
+| `change.md` | this section |
+
+### Removed
+
+| File | Why |
+|---|---|
+| `frontend/dist/assets/index--Z-SV9Bp.js` | replaced by the rebuilt portal |
+| `frontend/dist/assets/index-B9nhcY2p.css` | replaced by the rebuilt portal |
+
+### Unchanged
+
+`start.sh`, `openshift/*`, `samples/agreement.json`, `server/data/`,
+`server/src/{accounts,generate,remote,tags,enums,query}.js`, `server/node_modules` (no new server packages; the
+portal uses `marked` for the manual page, bundled into the portal files).
+
+### Upgrade notes
+
+* *Array patch (sync)* is off for all existing APIs. Merge patches that send an array for a list **without** a unique
+  key now add the items instead of replacing the list. Turn *Array patch (sync)* on for APIs that should keep
+  replacing arrays.
+
+### Files next to the .tar
+
+| File | Change |
+|---|---|
+| `Dockerfile` | `PACKAGE` points to `mock-api-portal-1.13.0.tar.gz` |
+| `DEPLOY.md` | version 1.13.0 |
+| `USER_MANUAL.md` | new |
+| `mock-api-portal-1.13.0.tar.gz.sha256` | new checksum |
+| `change.md` | round 13 section added |
+
 ## Modification in round 12
 
 Package **mock-api-portal-1.12.0.tar.gz**, compared with **mock-api-portal-1.11.0.tar.gz**.

@@ -19,7 +19,7 @@ export function setToken(t) {
 }
 
 async function request(method, url, body, contentType = 'application/json') {
-  const headers = {};
+  const headers = { 'X-Mock-Portal': '1' };
   if (body !== undefined) headers['Content-Type'] = contentType;
   if (token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(url, {
@@ -63,6 +63,7 @@ export const admin = {
   regex: (key, path, pattern) =>
     request('GET', `/admin/apis/${enc(key)}/tags/regex?path=${enc(path)}${pattern !== undefined ? `&pattern=${enc(pattern)}` : ''}`),
   values: (key, path) => request('GET', `/admin/apis/${enc(key)}/values?path=${enc(path)}`),
+  mockCurrent: (key, params) => request('GET', `/admin/apis/${enc(key)}/mocks/current?${new URLSearchParams(params)}`),
   mockPlan: (key, source) => request('GET', `/admin/apis/${enc(key)}/mocks/plan?source=${enc(source)}`),
   createMocks: (key, spec) => request('POST', `/admin/apis/${enc(key)}/mocks`, spec),
   remove: (key) => request('DELETE', `/admin/apis/${enc(key)}`),
