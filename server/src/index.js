@@ -17,7 +17,7 @@ const PORT = Number(process.env.PORT || 4000);
 const BODY_LIMIT = process.env.BODY_LIMIT || '50mb';
 
 const app = express();
-app.use(cors({ exposedHeaders: ['Location', 'X-Total-Count', 'X-Result-Count', 'X-Patch-Mode', 'X-Patch-Resolved', 'X-Search-Config-Updated', 'X-Not-Found-Ids'] }));
+app.use(cors({ exposedHeaders: ['Location', 'X-Array-Patch', 'X-Total-Count', 'X-Result-Count', 'X-Patch-Mode', 'X-Patch-Resolved', 'X-Search-Config-Updated', 'X-Not-Found-Ids'] }));
 app.use(analytics.logger);
 app.use(express.json({ limit: BODY_LIMIT, type: ['application/json', 'application/*+json'] }));
 
@@ -61,6 +61,7 @@ const slugify = (s) =>
 const asRecords = (sample) => (Array.isArray(sample) ? sample : [sample]);
 
 async function applySample(api, sample, records, seed = true) {
+  for (const rec of records) if (rec.id == null || rec.id === '') rec.id = crypto.randomUUID();
   store.saveSample(api._id, sample);
   const { tags, dropped } = computeTags(records, api.tags);
   const searchKey = (list) => list.filter((t) => t.searchable).map((t) => t.path).sort().join('|');
@@ -70,7 +71,6 @@ async function applySample(api, sample, records, seed = true) {
   if (seed) {
     const ds = await store.getDatastore(api._id);
     for (const rec of records) {
-      if (rec.id == null || rec.id === '') rec.id = crypto.randomUUID();
       const existing = await ds.findOneAsync({ _id: String(rec.id) });
       const doc = store.toDoc(updated, rec, existing);
       await ds.updateAsync({ _id: doc._id }, doc, { upsert: true });
@@ -153,11 +153,17 @@ admin.patch(
   wrap(async (req, res) => {
     const api = findApi(req, res);
     if (!api) return;
-    const max = Number(req.body?.maxRecords);
-    if (!Number.isInteger(max) || max < 1 || max > 100000) {
-      throw { status: 400, code: 'INVALID_MAX_RECORDS', message: '# records must be a whole number between 1 and 100000' };
+    const patch = {};
+    if (req.body?.maxRecords !== undefined) {
+      const max = Number(req.body.maxRecords);
+      if (!Number.isInteger(max) || max < 1 || max > 100000) {
+        throw { status: 400, code: 'INVALID_MAX_RECORDS', message: 'Max Records must be a whole number between 1 and 100000' };
+      }
+      patch.maxRecords = max;
     }
-    const updated = await store.updateApi(api._id, { maxRecords: max });
+    if (req.body?.arraySync !== undefined) patch.arraySync = !!req.body.arraySync;
+    if (!Object.keys(patch).length) throw { status: 400, message: 'Nothing to update – send maxRecords and/or arraySync' };
+    const updated = await store.updateApi(api._id, patch);
     res.json({ ...updated, recordCount: await store.countRecords(api._id) });
   })
 );
@@ -755,47 +761,106 @@ data.post(
   })
 );
 
+async function patchContext(req) {
+  const tags = req.mockApi.tags;
+  const refs = await store.referenceRecords(req.mockApi._id);
+  const generate = String(req.query.generate ?? '').toLowerCase() !== 'false';
+  const keys = String(req.query.pathMode || '').toLowerCase() === 'index' ? null : uniqueKeys(tags);
+  const onAdd = (op, current) => {
+    const base = tagPathOfPointer(current, op.path);
+    let value = op.value;
+    if (generate) {
+      value = fillIds(structuredClone(value), tags, { base, doc: current, refs, skipRoot: true }).value;
+      value = fillMissing(value, tags, { base, refs }).value;
+      value = applyMaps(value, tags, { base, pointer: op.path, doc: current }).value;
+    }
+    const bad = mustViolations(value, tags, { base, pointer: op.path, refs });
+    if (bad.length) throw mustError(bad);
+    return value;
+  };
+  return { keys, onAdd, sync: !!req.mockApi.arraySync };
+}
+
+function patchOne(req, ctx, doc, body, mode, label = '') {
+  const record = JSON.parse(doc.body);
+  const id = doc._id;
+  let out;
+  try {
+    out = applyPatch(record, body, mode, ctx.keys, ctx.onAdd, { sync: ctx.sync });
+  } catch (e) {
+    if (label && e && e.message) e.message = `${label}${e.message}`;
+    throw e;
+  }
+  const next = out.doc;
+  if (!next || typeof next !== 'object' || Array.isArray(next)) {
+    throw { status: 422, message: `${label}Patched document must remain a JSON object` };
+  }
+  if (String(next.id) !== id) throw { status: 400, message: `${label}The id of a record cannot be changed` };
+  const bad = enumViolations(next, req.mockApi.tags, record);
+  if (bad.length) {
+    const err = enumError(bad);
+    err.message = `${label}${err.message}`;
+    throw err;
+  }
+  return { next, resolved: out.resolved };
+}
+
 data.patch(
   '/:id',
   wrap(async (req, res) => {
     const id = req.params.id;
     const mode = detectMode(req);
+    const ctx = await patchContext(req);
     const result = await store.withLock(`${req.mockApi._id}/${id}`, async () => {
       const doc = await req.ds.findOneAsync({ _id: id });
       if (!doc) throw { status: 404, message: `Record ${id} not found` };
-      const record = JSON.parse(doc.body);
-      const keys = String(req.query.pathMode || '').toLowerCase() === 'index' ? null : uniqueKeys(req.mockApi.tags);
-      const generate = String(req.query.generate ?? '').toLowerCase() !== 'false';
-      const tags = req.mockApi.tags;
-      const refs = await store.referenceRecords(req.mockApi._id);
-      const onAdd = (op, current) => {
-        const base = tagPathOfPointer(current, op.path);
-        let value = op.value;
-        if (generate) {
-          value = fillIds(structuredClone(value), tags, { base, doc: current, refs, skipRoot: true }).value;
-          value = fillMissing(value, tags, { base, refs }).value;
-          value = applyMaps(value, tags, { base, pointer: op.path, doc: current }).value;
-        }
-        const bad = mustViolations(value, tags, { base, pointer: op.path, refs });
-        if (bad.length) throw mustError(bad);
-        return value;
-      };
-      const { doc: next, resolved } = applyPatch(record, req.body, mode, keys, onAdd);
+      const { next, resolved } = patchOne(req, ctx, doc, req.body, mode);
       if (resolved.length) {
         const h = JSON.stringify(resolved.map((r) => ({ [r.path]: r.resolvedPath })));
         if (h.length < 4000) res.set('X-Patch-Resolved', h);
       }
-      if (!next || typeof next !== 'object' || Array.isArray(next)) {
-        throw { status: 422, message: 'Patched document must remain a JSON object' };
-      }
-      if (String(next.id) !== id) throw { status: 400, message: 'The id of a record cannot be changed' };
-      const bad = enumViolations(next, req.mockApi.tags, record);
-      if (bad.length) throw enumError(bad);
       await req.ds.updateAsync({ _id: id }, store.toDoc(req.mockApi, next, doc), {});
       return (await storedRecords(req.ds, [id]))[0];
     });
     const fields = parseFields(req.query.fields);
-    res.set('X-Patch-Mode', mode).json(fields ? project(result, fields) : result);
+    res.set('X-Patch-Mode', mode).set('X-Array-Patch', ctx.sync ? 'sync' : 'merge').json(fields ? project(result, fields) : result);
+  })
+);
+
+data.patch(
+  '/',
+  wrap(async (req, res) => {
+    const body = req.body;
+    const many = Array.isArray(body);
+    const items = many ? body : [body];
+    if (String(req.headers['content-type'] || '').includes('json-patch+json')) {
+      throw { status: 400, code: 'JSON_PATCH_NEEDS_ID', message: 'JSON Patch (application/json-patch+json) needs the record id in the URL; send records (with their id) as JSON or merge-patch+json to patch several records' };
+    }
+    if (!items.length || items.some((r) => !r || typeof r !== 'object' || Array.isArray(r))) {
+      throw { status: 400, message: 'Body must be a record or an array of records, each with its id' };
+    }
+    const ids = items.map((r, i) => {
+      if (r.id === undefined || r.id === null || r.id === '') throw { status: 400, code: 'ID_REQUIRED', message: `Record [${i}] has no "id" – the id identifies the record to update` };
+      return String(r.id);
+    });
+    const dup = ids.find((id, i) => ids.indexOf(id) !== i);
+    if (dup) throw { status: 400, message: `Duplicate id ${dup} in request` };
+    const ctx = await patchContext(req);
+    const result = await store.withLock(`${req.mockApi._id}/*patch`, async () => {
+      const docs = await req.ds.findAsync({ _id: { $in: ids } });
+      const byId = new Map(docs.map((d) => [d._id, d]));
+      const missing = ids.filter((id) => !byId.has(id));
+      if (missing.length) throw { status: 404, code: 'RECORD_NOT_FOUND', message: `Record${missing.length === 1 ? '' : 's'} not found: ${missing.join(', ')}`, notFound: missing };
+      const updates = items.map((item, i) => {
+        const doc = byId.get(ids[i]);
+        return { doc, next: patchOne(req, ctx, doc, item, 'merge', many ? `Record [${i}] (id ${ids[i]}): ` : '').next };
+      });
+      for (const { doc, next } of updates) await req.ds.updateAsync({ _id: doc._id }, store.toDoc(req.mockApi, next, doc), {});
+      return storedRecords(req.ds, ids);
+    });
+    const fields = parseFields(req.query.fields);
+    const out = fields ? result.map((r) => project(r, fields)) : result;
+    res.set('X-Patch-Mode', 'merge').set('X-Array-Patch', ctx.sync ? 'sync' : 'merge').json(many ? out : out[0]);
   })
 );
 

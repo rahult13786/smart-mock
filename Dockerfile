@@ -7,6 +7,7 @@ WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm ci --include=dev --no-audit --no-fund
 COPY frontend/ ./
+COPY USER_MANUAL.md /app/USER_MANUAL.md
 RUN npm run build
 WORKDIR /app/server
 COPY server/package*.json ./

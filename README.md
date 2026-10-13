@@ -1,5 +1,7 @@
 # Mock API Portal
 
+**User manual:** [`USER_MANUAL.md`](USER_MANUAL.md) (also in the portal: sidebar → *User manual*) – API settings, tag settings and Create mocks explained.
+
 Two parts:
 
 | Folder / file | What it is |
@@ -385,6 +387,7 @@ Unregistered base path → `404 {"error":"API not registered"}` for GET, POST an
 | POST | `/api/{basePath}/{name}/{version}` | Object or array of objects. `id` generated when missing; `409` if the id exists; `422 RECORD_LIMIT_REACHED` when the API already holds its *# records* limit (default 10). Response `201` with the **final stored record** (array for an array body) – generated ids, Create (post) values and maps included – and a `Location` header for a single record. |
 | DELETE | `/api/{basePath}/{name}/{version}/{id}` | Deletes the record → `{"deleted": id}`; `404` if it doesn't exist. (To remove a node *inside* a record use PATCH with a JSON Patch `remove` op.) |
 | PATCH | `/api/{basePath}/{name}/{version}/{id}` | **JSON Patch** (RFC 6902) with `Content-Type: application/json-patch+json` (or any array body); **JSON Merge Patch** (RFC 7396) with `Content-Type: application/merge-patch+json` (or any object body). `?mode=json-patch|merge` overrides. Response header `X-Patch-Mode`. A failed `test` op → `409`; invalid path → `422`; changing `id` → `400`. Response `200` with the **full updated record** as stored (the whole record, also when a list item was added); `?fields=id,name,agreementItem.id` returns only those paths (`id` always included). |
+| PATCH | `/api/{basePath}/{name}/{version}` | **Several records** (no id in the URL): a record or a list of records, each with its `id`, merged into the stored records (fields not sent stay); the response is the list of full updated records (`?fields=` supported). All-or-nothing: `404 RECORD_NOT_FOUND` if an id does not exist, `400 ID_REQUIRED` if a record has no id. |
 | HEAD | `/api/{basePath}/{name}/{version}[/{id}]` | Same as GET without a body: status, `Content-Type` and `Content-Length` of the GET response (any GET query parameters work). |
 
 Examples:
@@ -445,8 +448,12 @@ the *Create (post)*, regex, *Map* and *Must* rules run for it exactly as for a P
 
 With `agreementItem.id` *Unique* + *Create (post)* and `agreementItem.stcAgreementItemBusinessId` *Create (post)* +
 *Map ← agreementItem.id`, this appends one item with a generated id and `stcAgreementItemBusinessId` = that id, and
-keeps the existing items. Lists without a unique key, and requests with `?pathMode=index` (the portal), keep plain
-RFC 7396 behaviour (the array replaces the list).
+keeps the existing items.
+
+**Array patch (sync)** (API setting, off by default) decides what a merge patch does with arrays: **on** – the array
+sent replaces the stored array completely (5 stored + 2 sent → 2); **off** – items are merged by the list's unique key
+(matching items updated, others added) or, without a unique key, all items sent are added. Response header
+`X-Array-Patch: sync|merge`. Requests with `?pathMode=index` (the portal's own saves) keep plain RFC 7396 behaviour.
 
 ### Enum (allowed values) validation
 
@@ -526,7 +533,7 @@ When 2 or 3 happens the response carries `X-Search-Config-Updated: <paths>`, and
 | GET / POST | `/admin/auth/me` / `/admin/auth/logout` | Logged-in user (with `scope` = `{domain}-{team}-{technology}-{role}`) / end the session |
 | GET | `/admin/apis` | APIs the logged-in user may access (smadmin: all; a user: `{scope}-dev/st/sit`), with record counts |
 | POST | `/admin/apis` | `{name, version, env}` → registers `/api/{scope}-{env}/{name}/{version}` (smadmin also sends `domain, team, technology, role`); `409` when base path + name + version exists |
-| GET / PATCH | `/admin/apis/{key}` | One API with its tags / `{maxRecords}` – the *# records* limit (default 10). `403` for APIs outside the user's scope |
+| GET / PATCH | `/admin/apis/{key}` | One API with its tags / `{maxRecords, arraySync}` – *Max Records* (default 10) and *Array patch (sync)*. `403` for APIs outside the user's scope |
 | GET / PUT | `/admin/apis/{key}/sample` | Read / save sample JSON `{sample, seed?:true}` → stores the id tags of the sample (tags you added are kept while their path still exists), seeds records (upsert by id) |
 | PUT | `/admin/apis/{key}/tags` | `{tags:[{path, type?, searchable, unique?, enum?, must?, create?, regex?, remove?}]}` → new paths are validated against the sample (all-or-nothing, `422` with `code` PATH_NOT_IN_SAMPLE / NOT_A_VALUE / TYPE_MISMATCH), then saved and records re-indexed. `create` and `regex` apply to id tags only; an invalid regex → `400 INVALID_REGEX` |
 | GET | `/admin/apis/{key}/tags/map?path=agreementItem.productOfferingPrice.name` | Fields that can be mapped to a non-id tag (`{candidates:[{path, type, relation: sibling/parent, sample}]}`) |
@@ -556,7 +563,8 @@ When 2 or 3 happens the response carries `X-Search-Config-Updated: <paths>`, and
    that env (smadmin sees all APIs; older APIs without a base path appear under *Other*). `+` shows the base path
    from your user – `{domain}-{team}-{technology}-{role}-` read-only – plus an env drop-down (dev, st, sit), then
    name and version (smadmin picks all five parts). The API path is `/api/{base path}/{name}/{version}`.
-   Each API has a **# Records** field next to *Version* (with the stored count in brackets, e.g. `(3 stored)`) (not asked when creating, default 10): POST requests and
+   Each API has, on the line under *Name* / *Version*, **Max Records** (with the stored count in brackets, e.g. `(3 stored)`)
+   and **Array patch (sync)** (see *PATCH several records*) (not asked when creating, default 10): POST requests and
    *Create mocks* are refused once that many records are stored.
    `+` asks for name and version. After creating, a text area asks for the sample
    JSON (paste or load a file). On save the API name becomes read-only and records are seeded.
@@ -650,7 +658,8 @@ When 2 or 3 happens the response carries `X-Search-Config-Updated: <paths>`, and
      with no traffic show 0), sorted by most used first, with **API requests**, **Successful requests** (status
      < 400), **Failed requests** (status ≥ 400, incl. 404 / 409 / 422), average response time, requests per
      method and the time of the last request; totals on top. Refreshes every 10 s; **Reset** sets the counters to 0.
-     Only `/api/...` and `/apis/...` calls are counted (not the portal). Counters are saved in NeDB
+     Only `/api/...` and `/apis/...` calls from other systems (Postman, applications) are counted – calls the portal
+     makes itself (they carry the header `X-Mock-Portal: 1`) are left out. Counters are saved in NeDB
      (`DATA_DIR/admin/analytics.db`) every few seconds and on shutdown.
    Users, configurations, sessions and analytics are stored in NeDB (`DATA_DIR/admin/*.db`), and in Redis when the
    Upstash variables are set (with several instances, analytics counters are per instance and approximate).

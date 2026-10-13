@@ -46,7 +46,7 @@ function upgrade(api) {
     });
   }
   const maxRecords = Number.isInteger(api.maxRecords) && api.maxRecords > 0 ? api.maxRecords : DEFAULT_MAX_RECORDS;
-  return { ...api, tags: withIdUnique(tags), tagsRev: TAGS_REV, maxRecords };
+  return { ...api, tags: withIdUnique(tags), tagsRev: TAGS_REV, maxRecords, arraySync: !!api.arraySync };
 }
 
 async function init() {
@@ -83,6 +83,7 @@ async function createApi(name, version, scope = null) {
     ...(scope ? { group, domain: scope.domain, team: scope.team, technology: scope.technology, role: scope.role, env: scope.env } : {}),
     basePath: group ? `/api/${group}/${name}/${version}` : `/api/${name}/${version}`,
     maxRecords: DEFAULT_MAX_RECORDS,
+    arraySync: false,
     hasSample: false,
     tags: [],
     tagsRev: TAGS_REV,
@@ -160,6 +161,7 @@ function getDatastore(key) {
       const ds = new Datastore({ filename: path.join(API_DIR, `${key}.db`), modes: MODES });
       await ds.loadDatabaseAsync();
       await ds.ensureIndexAsync({ fieldName: 'createdAt' });
+      await repairIds(ds);
       ds.setAutocompactionInterval(120_000);
       if (remote.enabled) trackWrites(key, ds);
       return ds;
@@ -192,6 +194,21 @@ function markCollection(name, ids) {
   if (!remote.enabled || !tracking) return;
   if (!dirty.collections.has(name)) dirty.collections.set(name, new Set());
   for (const id of ids) if (typeof id === 'string') dirty.collections.get(name).add(id);
+}
+
+async function repairIds(ds) {
+  const broken = await ds.findAsync({ 'summary.id': { $exists: false } });
+  for (const d of broken) {
+    let body;
+    try {
+      body = JSON.parse(d.body);
+    } catch {
+      continue;
+    }
+    if (body.id !== undefined && body.id !== null && body.id !== '') continue;
+    body = { id: d._id, ...body };
+    await ds.updateAsync({ _id: d._id }, { $set: { body: JSON.stringify(body), 'summary.id': d._id } }, {});
+  }
 }
 
 function trackWrites(key, ds, markFn = markRecords) {
@@ -303,6 +320,7 @@ async function ensureFresh() {
 }
 
 function toDoc(api, record, existing) {
+  if (record.id === undefined || record.id === null || record.id === '') record.id = existing ? existing._id : require('crypto').randomUUID();
   const now = new Date().toISOString();
   return {
     _id: String(record.id),

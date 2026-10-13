@@ -89,7 +89,14 @@ function keyMatch(arr, field, value) {
   return hits.length === 1 ? hits[0] : hits.length > 1 ? -2 : -1;
 }
 
-function mergeList(target, patch, field, keys, names, where, added) {
+const clean = (v) => (isObj(v) ? mergePatch({}, v) : v);
+
+function appendItem(out, el, names, where, ctx) {
+  out.push(clean(el));
+  if (ctx.added && isObj(el)) ctx.added.push({ pointer: `${where}/${out.length - 1}`, listPath: names.join('.') });
+}
+
+function mergeList(target, patch, field, names, where, ctx) {
   const out = target.slice();
   for (const el of patch) {
     if (el === null || el === undefined) continue;
@@ -97,31 +104,35 @@ function mergeList(target, patch, field, keys, names, where, added) {
     if (at === -2) {
       throw { status: 409, code: 'AMBIGUOUS_ITEM', message: `"${el[field]}" matches several items by unique key "${field}" in ${where || '/'}` };
     }
-    if (at >= 0) {
-      out[at] = mergePatch(out[at], el, keys, names, `${where}/${at}`, added);
-      continue;
-    }
-    out.push(isObj(el) ? mergePatch({}, el, null, names, `${where}/${out.length}`) : el);
-    if (added) added.push({ pointer: `${where}/${out.length - 1}`, listPath: names.join('.') });
+    if (at >= 0) out[at] = mergeInto(out[at], el, names, `${where}/${at}`, ctx);
+    else appendItem(out, el, names, where, ctx);
   }
   return out;
 }
 
-function mergePatch(target, patch, keys = null, names = [], where = '', added = null) {
-  if (Array.isArray(patch) && Array.isArray(target) && keys && keys.has(names.join('.'))) {
-    return mergeList(target, patch, keys.get(names.join('.')), keys, names, where, added);
-  }
+function mergeArray(target, patch, names, where, ctx) {
+  if (ctx.sync) return patch.filter((el) => el !== null && el !== undefined).map(clean);
+  const field = ctx.keys.get(names.join('.'));
+  if (field) return mergeList(target, patch, field, names, where, ctx);
+  if (!patch.some(isObj)) return patch;
+  const out = target.slice();
+  for (const el of patch) if (el !== null && el !== undefined) appendItem(out, el, names, where, ctx);
+  return out;
+}
+
+function mergeInto(target, patch, names, where, ctx) {
+  if (Array.isArray(patch) && Array.isArray(target) && ctx.keys) return mergeArray(target, patch, names, where, ctx);
   if (!isObj(patch)) return patch;
-  if (Array.isArray(target) && keys) {
+  if (Array.isArray(target) && ctx.keys) {
     const out = target.slice();
     const removals = [];
     for (const [k, v] of Object.entries(patch)) {
-      const hit = findItem(out, k, names.join('.'), keys, where || '/');
+      const hit = findItem(out, k, names.join('.'), ctx.keys, where || '/');
       if (!hit) {
         throw { status: 422, code: 'ITEM_NOT_FOUND', message: `No item "${k}" in ${where || '/'} – looked up by id, unique key and index` };
       }
       if (v === null) removals.push(hit.index);
-      else out[hit.index] = mergePatch(out[hit.index], v, keys, names, `${where}/${hit.index}`, added);
+      else out[hit.index] = mergeInto(out[hit.index], v, names, `${where}/${hit.index}`, ctx);
     }
     removals.sort((a, b) => b - a).forEach((i) => out.splice(i, 1));
     return out;
@@ -129,9 +140,13 @@ function mergePatch(target, patch, keys = null, names = [], where = '', added = 
   const out = isObj(target) ? { ...target } : {};
   for (const [k, v] of Object.entries(patch)) {
     if (v === null) delete out[k];
-    else out[k] = mergePatch(out[k], v, keys, [...names, k], `${where}/${esc(k)}`, added);
+    else out[k] = mergeInto(out[k], v, [...names, k], `${where}/${esc(k)}`, ctx);
   }
   return out;
+}
+
+function mergePatch(target, patch, keys = null, names = [], where = '', added = null, sync = false) {
+  return mergeInto(target, patch, names, where, { keys, added, sync });
 }
 
 function detectMode(req) {
@@ -144,7 +159,7 @@ function detectMode(req) {
   return Array.isArray(req.body) ? 'json-patch' : 'merge';
 }
 
-function applyPatch(record, body, mode, keys = null, onAdd = null) {
+function applyPatch(record, body, mode, keys = null, onAdd = null, options = {}) {
   if (mode === 'json-patch') {
     if (!Array.isArray(body)) throw { status: 400, message: 'JSON Patch body must be an array of operations' };
     let doc = jsonpatch.deepClone(record);
@@ -186,7 +201,7 @@ function applyPatch(record, body, mode, keys = null, onAdd = null) {
   }
   if (!isObj(body)) throw { status: 400, message: 'Merge Patch body must be a JSON object' };
   const added = [];
-  let doc = mergePatch(record, body, keys, [], '', added);
+  let doc = mergePatch(record, body, keys, [], '', added, !!options.sync);
   if (onAdd) {
     for (const a of added) {
       const segs = a.pointer.split('/').slice(1).map(unesc);

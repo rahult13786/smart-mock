@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { listPaths } = require('./tags');
 const { locate } = require('./enums');
 
@@ -299,6 +300,12 @@ function buildMocks(template, spec, tags, existingIds) {
         } else continue;
         setByPointer(doc, o.pointer, nv);
       }
+    }
+    if (doc.id === undefined || doc.id === null || doc.id === '') {
+      let id = crypto.randomUUID();
+      while (usedIds.has(id)) id = crypto.randomUUID();
+      usedIds.add(id);
+      doc = { id, ...doc };
     }
     records.push(doc);
   }
