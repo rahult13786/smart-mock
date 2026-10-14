@@ -3,6 +3,66 @@
 Each section lists the files inside `mock-api-portal-<version>.tar.gz` (top folder `mock-api-portal/`) that
 changed compared with the previous package. `node_modules` is summarised by package.
 
+## Modification in round 15
+
+Package **mock-api-portal-1.15.0.tar.gz**, compared with **mock-api-portal-1.14.0.tar.gz**.
+
+### Changes in this round
+
+1. **Sample JSON removed from the home page.** The example PATCH request and response (the `specimen` block) is no
+   longer shown on the left side, and its styles are removed. The name, headline, summary paragraph and the four
+   features are unchanged.
+2. **Home page fits the screen – no vertical scroll bar.** The page is exactly one screen high, and text sizes and
+   spacing scale with the screen height. Checked at 34 combinations of sign-in / sign-up and screen size, from
+   2560×1440 down to 320×568 and phones in landscape (667×375).
+   * Laptop and desktop: summary on the left, sign-in card on the right, both centred vertically.
+   * Short screens (height ≤ 640 px): the feature descriptions are hidden (their titles stay) and the card is more
+     compact.
+   * Phones: sign-in card on top, summary below. On short phones the features are shown as two columns of titles,
+     and below 600 px height the summary paragraph is hidden. *Sign up* uses the whole screen for the form.
+   * Phones in landscape: card and headline side by side.
+   The full summary is still in the page's static HTML for search engines.
+
+### Added
+
+| File | Why |
+|---|---|
+| `frontend/dist/assets/index-DeXcs4yr.js` | rebuilt portal without the sample JSON block (replaces `index-Ddx4g_cA.js`) |
+| `frontend/dist/assets/index-CSzsePGJ.css` | rebuilt styles: one-screen home page (replaces `index-DW3Dndhk.css`) |
+
+### Modified
+
+| File | Why |
+|---|---|
+| `frontend/dist/index.html` | references the rebuilt assets |
+| `server/package.json` | version 1.15.0 |
+| `server/package-lock.json` | version 1.15.0 |
+| `DEPLOY.md` | version 1.15.0 |
+| `build-info.json` | version 1.15.0, build time |
+| `change.md` | this section |
+
+### Removed
+
+| File | Why |
+|---|---|
+| `frontend/dist/assets/index-Ddx4g_cA.js` | replaced by the rebuilt portal |
+| `frontend/dist/assets/index-DW3Dndhk.css` | replaced by the rebuilt portal |
+
+### Unchanged
+
+`start.sh`, `openshift/*`, `samples/agreement.json`, `server/data/`, `USER_MANUAL.md`, `frontend/dist/robots.txt`,
+all of `server/src/*`, `server/node_modules`. Server behaviour is unchanged.
+
+### Files next to the .tar
+
+| File | Change |
+|---|---|
+| `Dockerfile` | `PACKAGE` points to `mock-api-portal-1.15.0.tar.gz` |
+| `DEPLOY.md` | version 1.15.0 |
+| `USER_MANUAL.md` | unchanged |
+| `mock-api-portal-1.15.0.tar.gz.sha256` | new checksum |
+| `change.md` | round 15 section added |
+
 ## Modification in round 14
 
 Package **mock-api-portal-1.14.0.tar.gz**, compared with **mock-api-portal-1.13.0.tar.gz**.
