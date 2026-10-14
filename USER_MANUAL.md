@@ -4,6 +4,8 @@ This manual explains the settings you find when you register an API, define its 
 
 **Quick start**
 
+0. No login yet? Click **Sign up** on the home page, enter your name, email and a remark (your team, the APIs and
+   env you need) and **Send request**. An administrator creates your user and shares your password.
 1. Log in, open **Register API** and click **+**.
 2. Choose the env (dev, st, sit), enter a name and version, then **Create**.
 3. Paste a sample JSON record and **Save sample**. Its records are stored and the id fields become tags.
@@ -174,4 +176,6 @@ The mocks are saved straight away and appear in the record list.
   parts come from your user; the values are configured by smadmin in *Admin view → Configurations*.
 - **Analytics** (smadmin) – *Admin view → Analytics* counts calls made by other systems (Postman, applications)
   per API. Calls made by the portal itself are not counted.
+- **Access requests** (smadmin) – *Admin view → Access requests* lists every *Sign up* with its remark. **Create
+  user** fills the new-user form from the request and marks it *Done*; **Reject** or **Delete** the others.
 - **Raw JSON** – every record, list and item can be viewed as a tree (**+** / **−**), and edited with *Edit JSON*.

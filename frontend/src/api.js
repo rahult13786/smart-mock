@@ -73,6 +73,7 @@ export const auth = {
   login: (email, password) => request('POST', '/admin/auth/login', { email, password }),
   me: () => request('GET', '/admin/auth/me'),
   logout: () => request('POST', '/admin/auth/logout'),
+  signup: (body) => request('POST', '/admin/auth/signup', body),
   options: () => request('GET', '/admin/auth/options'),
 };
 
@@ -89,6 +90,9 @@ export const accounts = {
   removeConfiguration: (id) => request('DELETE', `/admin/configurations/${enc(id)}`),
   analytics: () => request('GET', '/admin/analytics'),
   resetAnalytics: () => request('DELETE', '/admin/analytics'),
+  accessRequests: () => request('GET', '/admin/access-requests'),
+  updateAccessRequest: (id, body) => request('PATCH', `/admin/access-requests/${enc(id)}`, body),
+  removeAccessRequest: (id) => request('DELETE', `/admin/access-requests/${enc(id)}`),
 };
 
 export const data = (basePath) => ({

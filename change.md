@@ -3,6 +3,81 @@
 Each section lists the files inside `mock-api-portal-<version>.tar.gz` (top folder `mock-api-portal/`) that
 changed compared with the previous package. `node_modules` is summarised by package.
 
+## Modification in round 14
+
+Package **mock-api-portal-1.14.0.tar.gz**, compared with **mock-api-portal-1.13.0.tar.gz**.
+
+### Changes in this round
+
+1. **Home page split in two.** The left side is a marketing summary of *Mocking Solution*: headline, a lead
+   paragraph, four features (from sample to endpoint, realistic test data, standard patch and query support,
+   separate spaces per team) and an example PATCH request with its response. The right side holds the sign-in card.
+   On phones the sign-in card comes first and the summary follows.
+   For search engines, `index.html` now has a descriptive title, meta description and keywords, Open Graph and
+   Twitter tags, JSON-LD (`SoftwareApplication`) and the same summary as static HTML that crawlers read before the
+   portal script replaces it. `robots.txt` allows the home page and keeps `/api/` and `/admin/` out of indexes.
+2. **Sign up.** A **Sign up** link under *Login* (or `/#signup`) shows a form with **Name**, **Email** and
+   **Remark** (text area). *Send request* stores the request through the public endpoint `POST /admin/auth/signup`
+   and shows a confirmation. Names, emails and remarks are length-checked, a second open request from the same email
+   updates the first, and a hidden honeypot field drops simple bot submissions.
+3. **Admin view → Access requests.** A fourth tab lists every sign-up (received, name, email, remark, status
+   New / Done / Rejected), new first, with the number of new requests on the tab. **Create user** opens the
+   *New user* form with first name, last name and email filled in and marks the request *Done* when the user is
+   saved; **Mark done**, **Reject**, **Reopen** and **Delete** manage the list. Endpoints (smadmin only):
+   `GET /admin/access-requests`, `PATCH` / `DELETE /admin/access-requests/{id}`.
+4. **Docs** – README and `USER_MANUAL.md` describe the sign-up and the Access requests tab.
+
+### Added
+
+| File | Why |
+|---|---|
+| `frontend/dist/robots.txt` | lets search engines index the home page, not the API or admin paths |
+| `frontend/dist/assets/index-Ddx4g_cA.js` | rebuilt portal: split home page, Sign up form, Access requests tab (replaces `index-CN30uRnL.js`) |
+| `frontend/dist/assets/index-DW3Dndhk.css` | rebuilt portal styles: home page, access requests (replaces `index-BUzK7hSP.css`) |
+
+### Modified
+
+| File | Why |
+|---|---|
+| `server/src/accounts.js` | public `POST /admin/auth/signup`; access request list, status change and delete |
+| `server/src/index.js` | `/admin/access-requests` is smadmin only |
+| `server/src/store.js` | new `signups` collection (NeDB `DATA_DIR/admin/signups.db`, synced to Redis when set) |
+| `server/package.json` | version 1.14.0 |
+| `server/package-lock.json` | version 1.14.0 |
+| `frontend/dist/index.html` | SEO title, meta, Open Graph, JSON-LD, static summary; references the rebuilt assets |
+| `USER_MANUAL.md` | sign up and access requests |
+| `DEPLOY.md` | version 1.14.0 |
+| `build-info.json` | version 1.14.0, build time |
+| `change.md` | this section |
+
+### Removed
+
+| File | Why |
+|---|---|
+| `frontend/dist/assets/index-CN30uRnL.js` | replaced by the rebuilt portal |
+| `frontend/dist/assets/index-BUzK7hSP.css` | replaced by the rebuilt portal |
+
+### Unchanged
+
+`start.sh`, `openshift/*`, `samples/agreement.json`, `server/data/`,
+`server/src/{analytics,patch,generate,mockgen,remote,tags,enums,query}.js`, `server/node_modules` (no new packages).
+
+### Upgrade notes
+
+* No data migration. The `signups` collection is created on first use.
+* If the portal is served under its own domain, search engines can index the home page; nothing behind the login is
+  exposed.
+
+### Files next to the .tar
+
+| File | Change |
+|---|---|
+| `Dockerfile` | `PACKAGE` points to `mock-api-portal-1.14.0.tar.gz` |
+| `DEPLOY.md` | version 1.14.0 |
+| `USER_MANUAL.md` | sign up and access requests |
+| `mock-api-portal-1.14.0.tar.gz.sha256` | new checksum |
+| `change.md` | round 14 section added |
+
 ## Modification in round 13
 
 Package **mock-api-portal-1.13.0.tar.gz**, compared with **mock-api-portal-1.12.0.tar.gz**.

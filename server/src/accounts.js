@@ -207,6 +207,42 @@ authRouter.post(
   })
 );
 
+const REQUEST_STATUS = ['new', 'done', 'rejected'];
+const publicRequest = (r) => ({ _id: r._id, name: r.name, email: r.email, remark: r.remark, status: r.status, createdAt: r.createdAt, updatedAt: r.updatedAt, userId: r.userId || null });
+
+authRouter.post(
+  '/auth/signup',
+  wrap(async (req, res) => {
+    const body = req.body || {};
+    if (text(body.website)) return res.status(201).json({ ok: true });
+    const name = text(body.name);
+    const email = text(body.email).toLowerCase();
+    const remark = typeof body.remark === 'string' ? body.remark.trim() : '';
+    const problems = [];
+    if (!name) problems.push('Name is required');
+    else if (name.length > 120) problems.push('Name is too long (max 120 characters)');
+    if (!email) problems.push('Email is required');
+    else if (!EMAIL.test(email) || email.length > 200) problems.push(`"${email}" is not a valid email address`);
+    if (remark.length > 2000) problems.push('Remark is too long (max 2000 characters)');
+    if (problems.length) throw { status: 400, code: 'INVALID_SIGNUP', message: problems.join('; '), problems };
+    const ds = await store.getCollection('signups');
+    const doc = await store.withLock('signups', async () => {
+      const open = await ds.findOneAsync({ email, status: 'new' });
+      const now = new Date().toISOString();
+      if (open) {
+        const next = { ...open, name, remark: remark || open.remark, updatedAt: now };
+        await ds.updateAsync({ _id: open._id }, next, {});
+        return next;
+      }
+      if ((await ds.countAsync({ status: 'new' })) >= 1000) throw { status: 429, code: 'TOO_MANY_REQUESTS', message: 'Too many open requests – please try again later' };
+      const d = { _id: crypto.randomUUID(), name, email, remark, status: 'new', createdAt: now, updatedAt: now };
+      await ds.insertAsync(d);
+      return d;
+    });
+    res.status(201).json({ ok: true, id: doc._id });
+  })
+);
+
 authRouter.get('/auth/options', wrap(async (_req, res) => res.json({ ...(await userOptions()), env: ENVS })));
 
 const router = express.Router();
@@ -320,6 +356,40 @@ router.delete(
     const users = await store.getCollection('users');
     const n = await users.removeAsync({ _id: req.params.id }, {});
     if (!n) return res.status(404).json({ error: 'User not found' });
+    res.json({ deleted: req.params.id });
+  })
+);
+
+router.get(
+  '/access-requests',
+  wrap(async (_req, res) => {
+    const ds = await store.getCollection('signups');
+    const list = (await ds.findAsync({})).map(publicRequest);
+    list.sort((a, b) => (a.status === 'new' ? 0 : 1) - (b.status === 'new' ? 0 : 1) || b.createdAt.localeCompare(a.createdAt));
+    res.json(list);
+  })
+);
+
+router.patch(
+  '/access-requests/:id',
+  wrap(async (req, res) => {
+    const ds = await store.getCollection('signups');
+    const r = await ds.findOneAsync({ _id: req.params.id });
+    if (!r) return res.status(404).json({ error: 'Request not found' });
+    const status = text(req.body?.status).toLowerCase();
+    if (!REQUEST_STATUS.includes(status)) throw { status: 400, message: `status must be one of ${REQUEST_STATUS.join(', ')}` };
+    const next = { ...r, status, ...(req.body?.userId ? { userId: String(req.body.userId) } : {}), updatedAt: new Date().toISOString() };
+    await ds.updateAsync({ _id: r._id }, next, {});
+    res.json(publicRequest(next));
+  })
+);
+
+router.delete(
+  '/access-requests/:id',
+  wrap(async (req, res) => {
+    const ds = await store.getCollection('signups');
+    const n = await ds.removeAsync({ _id: req.params.id }, {});
+    if (!n) return res.status(404).json({ error: 'Request not found' });
     res.json({ deleted: req.params.id });
   })
 );

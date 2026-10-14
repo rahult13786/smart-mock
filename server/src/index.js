@@ -491,7 +491,7 @@ admin.delete(
 
 app.use('/admin', accounts.authRouter);
 app.use('/admin', accounts.authenticate);
-app.use(['/admin/users', '/admin/configurations', '/admin/analytics'], accounts.requireAdmin);
+app.use(['/admin/users', '/admin/configurations', '/admin/analytics', '/admin/access-requests'], accounts.requireAdmin);
 app.use('/admin', accounts.router);
 app.use('/admin', analytics.router);
 app.use('/admin', admin);
