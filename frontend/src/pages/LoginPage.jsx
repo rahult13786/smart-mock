@@ -9,27 +9,6 @@ const FEATURES = [
   ['Separate spaces per team', 'Dev, ST and SIT APIs per domain, team and technology, with usage analytics for every mock API.'],
 ];
 
-function Specimen() {
-  return (
-    <figure className="specimen" aria-label="Example request to a mock API and its response">
-      <pre>
-        <span className="sp-method">PATCH</span> <span className="sp-path">/api/fixedline-bau-ms-dev-st/agreement/v1/MSA-117198-061026</span>
-        {'\n'}
-        <span className="sp-dim">Content-Type: application/merge-patch+json</span>
-        {'\n\n'}
-        {'{ '}<span className="sp-key">"status"</span>: <span className="sp-str">"Approved"</span>{' }'}
-      </pre>
-      <pre className="sp-response">
-        <span className="sp-ok">200 OK</span>
-        {'\n'}
-        {'{\n  '}<span className="sp-key">"id"</span>: <span className="sp-str">"MSA-117198-061026"</span>{',\n  '}
-        <span className="sp-key">"status"</span>: <span className="sp-str">"Approved"</span>{',\n  '}
-        <span className="sp-key">"agreementItem"</span>: [ <span className="sp-dim">…</span> ]{'\n}'}
-      </pre>
-    </figure>
-  );
-}
-
 function SignInForm({ onSignUp }) {
   const { login } = useAuth();
   const [email, setEmail] = useState('');
@@ -146,7 +125,7 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="home">
+    <div className={`home mode-${mode}`}>
       <section className="home-story" aria-labelledby="home-title">
         <div className="home-brand">Mocking Solution</div>
         <h1 id="home-title">Mock APIs your teams can test against today</h1>
@@ -164,7 +143,6 @@ export default function LoginPage() {
             </div>
           ))}
         </dl>
-        <Specimen />
       </section>
       <section className="home-access" aria-label={mode === 'signup' ? 'Sign up' : 'Sign in'}>
         {mode === 'signup' ? <SignUpForm onSignIn={() => go('signin')} /> : <SignInForm onSignUp={() => go('signup')} />}
