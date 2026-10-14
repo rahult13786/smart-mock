@@ -69,12 +69,12 @@ function PasswordCell({ load, bare = false }) {
   );
 }
 
-function UserModal({ user, onClose, onSaved }) {
+function UserModal({ user, prefill, onClose, onSaved }) {
   const editing = !!user;
   const [form, setForm] = useState({
-    firstName: user?.firstName || '',
-    lastName: user?.lastName || '',
-    email: user?.email || '',
+    firstName: user?.firstName || prefill?.firstName || '',
+    lastName: user?.lastName || prefill?.lastName || '',
+    email: user?.email || prefill?.email || '',
     domain: user?.domain || '',
     team: user?.team || '',
     technology: user?.technology || '',
@@ -113,7 +113,7 @@ function UserModal({ user, onClose, onSaved }) {
 
   return (
     <Modal
-      title={editing ? `Edit user – ${user.email}` : 'New user'}
+      title={editing ? `Edit user – ${user.email}` : prefill ? `New user – access request from ${prefill.email}` : 'New user'}
       onClose={onClose}
       footer={
         <>
@@ -495,25 +495,173 @@ function AnalyticsTab() {
   );
 }
 
+const STATUS_LABEL = { new: 'New', done: 'Done', rejected: 'Rejected' };
+
+function splitName(name) {
+  const parts = String(name || '').trim().split(/\s+/);
+  return { firstName: parts[0] || '', lastName: parts.slice(1).join(' ') };
+}
+
+function AccessRequestsTab({ onChanged }) {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [filter, setFilter] = useState('');
+  const [creating, setCreating] = useState(null);
+  const [removing, setRemoving] = useState(null);
+  const [busy, setBusy] = useState('');
+
+  const load = useCallback(
+    () =>
+      accounts
+        .accessRequests()
+        .then((r) => {
+          setRows(r);
+          onChanged?.(r.filter((x) => x.status === 'new').length);
+        })
+        .catch((e) => setError(e.message)),
+    [onChanged]
+  );
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function setStatus(r, status, message) {
+    setBusy(r._id);
+    setError('');
+    try {
+      await accounts.updateAccessRequest(r._id, { status });
+      setNotice(message);
+      await load();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  const shown = (rows || []).filter((r) => !filter || r.status === filter);
+
+  return (
+    <>
+      <div className="section-head">
+        <h3>Access requests</h3>
+        <span className="count">{rows ? rows.length : '…'}</span>
+        <select className="type-filter" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter by status">
+          <option value="">All statuses</option>
+          {Object.entries(STATUS_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+        </select>
+        <span className="spacer" />
+        <button className="btn" onClick={load}>Refresh</button>
+      </div>
+      <p className="muted small">
+        Requests sent with <b>Sign up</b> on the home page. Create user opens the new-user form with the name and email
+        filled in and marks the request as done once the user is saved.
+      </p>
+      {notice && <div className="alert ok">{notice}</div>}
+      {error && <div className="alert error">{error}</div>}
+      <div className="card table-card">
+        <table className="grid requests-table">
+          <thead>
+            <tr>
+              <th>Received</th>
+              <th>Name</th>
+              <th>Email</th>
+              <th>Remark</th>
+              <th className="center">Status</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((r) => (
+              <tr key={r._id} className={r.status === 'new' ? '' : 'muted-row'}>
+                <td className="small nowrap">{fmtTime(r.createdAt)}</td>
+                <td>{r.name}</td>
+                <td><a href={`mailto:${r.email}`}>{r.email}</a></td>
+                <td className="remark-cell">{r.remark || <span className="muted">–</span>}</td>
+                <td className="center"><span className={`pill req-${r.status}`}>{STATUS_LABEL[r.status] || r.status}</span></td>
+                <td className="nowrap right">
+                  {r.status === 'new' ? (
+                    <>
+                      <button className="btn small primary" disabled={!!busy} onClick={() => { setNotice(''); setCreating(r); }}>Create user</button>{' '}
+                      <button className="btn small" disabled={!!busy} onClick={() => setStatus(r, 'done', `Request from ${r.email} marked as done.`)}>Mark done</button>{' '}
+                      <button className="btn small ghost danger" disabled={!!busy} onClick={() => setStatus(r, 'rejected', `Request from ${r.email} rejected.`)}>Reject</button>
+                    </>
+                  ) : (
+                    <button className="btn small" disabled={!!busy} onClick={() => setStatus(r, 'new', `Request from ${r.email} reopened.`)}>Reopen</button>
+                  )}{' '}
+                  <button className="btn small ghost danger" disabled={!!busy} onClick={() => setRemoving(r)}>Delete</button>
+                </td>
+              </tr>
+            ))}
+            {rows && shown.length === 0 && (
+              <tr><td colSpan={6} className="muted center">{filter ? `No ${STATUS_LABEL[filter].toLowerCase()} requests.` : 'No access requests yet. They appear here when someone uses Sign up on the home page.'}</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {creating && (
+        <UserModal
+          prefill={{ ...splitName(creating.name), email: creating.email }}
+          onClose={() => setCreating(null)}
+          onSaved={async (u) => {
+            const r = creating;
+            setCreating(null);
+            try {
+              await accounts.updateAccessRequest(r._id, { status: 'done', userId: u._id });
+              setNotice(`User ${u.email} created and the request marked as done. Share the password from the Users tab.`);
+            } catch (e) {
+              setError(e.message);
+            }
+            await load();
+          }}
+        />
+      )}
+      {removing && (
+        <ConfirmModal
+          title="Delete access request"
+          message={<>Delete the request from <b>{removing.name}</b> ({removing.email})?</>}
+          onConfirm={async () => {
+            await accounts.removeAccessRequest(removing._id);
+            setNotice(`Request from ${removing.email} deleted.`);
+            await load();
+          }}
+          onClose={() => setRemoving(null)}
+        />
+      )}
+    </>
+  );
+}
+
+const TABS = ['users', 'configurations', 'analytics', 'access-requests'];
+
 export default function AdminPage() {
   const { tab } = useParams();
-  if (!['users', 'configurations', 'analytics'].includes(tab)) return <Navigate to="/admin-view/users" replace />;
+  const [pending, setPending] = useState(0);
+  useEffect(() => {
+    accounts.accessRequests().then((r) => setPending(r.filter((x) => x.status === 'new').length)).catch(() => setPending(0));
+  }, []);
+  if (!TABS.includes(tab)) return <Navigate to="/admin-view/users" replace />;
   return (
     <div className="page admin-page">
       <div className="page-head">
         <div>
           <h1>Admin view</h1>
-          <p className="muted">Users, the values offered for their Domain / Team / Technology / Role, and API usage – stored in the portal's NeDB data.</p>
+          <p className="muted">Users, the values offered for their Domain / Team / Technology / Role, API usage and access requests – stored in the portal's NeDB data.</p>
         </div>
       </div>
       <div className="admin-tabs" role="tablist">
         <NavLink to="/admin-view/users" role="tab">Users</NavLink>
         <NavLink to="/admin-view/configurations" role="tab">Configurations</NavLink>
         <NavLink to="/admin-view/analytics" role="tab">Analytics</NavLink>
+        <NavLink to="/admin-view/access-requests" role="tab">
+          Access requests{pending > 0 && <span className="tab-count" title={`${pending} new`}>{pending}</span>}
+        </NavLink>
       </div>
       {tab === 'users' && <UsersTab />}
       {tab === 'configurations' && <ConfigurationsTab />}
       {tab === 'analytics' && <AnalyticsTab />}
+      {tab === 'access-requests' && <AccessRequestsTab onChanged={setPending} />}
     </div>
   );
 }

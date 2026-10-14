@@ -827,6 +827,25 @@ const step = async (name, fn) => {
       assert.equal((await n()) - before, 1);
     });
 
+    await step('sign up: public request, visible to smadmin as access request', async () => {
+      const anon = (method, url, body) => req(method, url, body, { authorization: '' });
+      assert.equal((await anon('POST', '/admin/auth/signup', { name: '', email: 'x' })).json.code, 'INVALID_SIGNUP');
+      const s1 = await anon('POST', '/admin/auth/signup', { name: 'Asha K', email: 'Asha@Example.com', remark: 'Need access to gsm APIs\nfor ST testing' });
+      assert.equal(s1.status, 201, JSON.stringify(s1.json));
+      const again = await anon('POST', '/admin/auth/signup', { name: 'Asha K.', email: 'asha@example.com', remark: 'second try' });
+      assert.equal(again.json.id, s1.json.id);
+      assert.equal((await anon('POST', '/admin/auth/signup', { name: 'Bot', email: 'bot@example.com', website: 'spam' })).status, 201);
+      assert.equal((await anon('GET', '/admin/access-requests')).status, 401);
+      const list = (await req('GET', '/admin/access-requests')).json;
+      assert.equal(list.length, 1);
+      assert.deepEqual([list[0].name, list[0].email, list[0].remark, list[0].status], ['Asha K.', 'asha@example.com', 'second try', 'new']);
+      assert.equal((await req('PATCH', `/admin/access-requests/${list[0]._id}`, { status: 'maybe' })).status, 400);
+      assert.equal((await req('PATCH', `/admin/access-requests/${list[0]._id}`, { status: 'done' })).json.status, 'done');
+      assert.equal((await anon('POST', '/admin/auth/signup', { name: 'Asha K', email: 'asha@example.com' })).json.id !== s1.json.id, true);
+      assert.equal((await req('GET', '/admin/access-requests')).json[0].status, 'new');
+      assert.equal((await req('DELETE', `/admin/access-requests/${s1.json.id}`)).status, 200);
+    });
+
     await step('persisted across restart', async () => {
       srv.kill();
       await new Promise((r) => srv.on('exit', r));
